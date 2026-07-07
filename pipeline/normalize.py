@@ -4,6 +4,7 @@ from typing import Tuple
 
 from bs4 import BeautifulSoup
 
+from pipeline.safety_terms import is_china_safety_event_text
 from utils import (
     soup_from_url,
     clean_text,
@@ -33,7 +34,6 @@ CURRENT_YEAR = 2026
 NO_FETCH_SOURCES = {
     "mysteel_fast",
     "mysteel_jiaotan",
-    "mysteel_coal_portal",
     "mysteel_list_fallback",
     "cls",
 }
@@ -222,11 +222,12 @@ def normalize_and_fetch_details(raw_candidates, start_dt, end_dt) -> Tuple[list,
             continue
 
         blob0 = f"{title} {url} {context}"
-        if _looks_bad(blob0) and not _is_important_coal_futures_item(blob0):
+        is_china_safety = is_china_safety_event_text(blob0)
+        if _looks_bad(blob0) and not _is_important_coal_futures_item(blob0) and not is_china_safety:
             skipped.append({"reason": "bad_keyword", "title": title, "url": url, "source": source})
             continue
 
-        if not _looks_good(blob0):
+        if not _looks_good(blob0) and not is_china_safety:
             skipped.append({"reason": "not_coal_enough", "title": title, "url": url, "source": source})
             continue
 
@@ -254,11 +255,11 @@ def normalize_and_fetch_details(raw_candidates, start_dt, end_dt) -> Tuple[list,
             content = clean_text(f"{title}. {context}")
             blob = f"{title} {content} {context}"
 
-            if _looks_bad(blob) and not _looks_good(title) and not _is_important_coal_futures_item(blob):
+            if _looks_bad(blob) and not _looks_good(title) and not _is_important_coal_futures_item(blob) and not is_china_safety_event_text(blob):
                 skipped.append({"reason": "bad_keyword_after_fetch", "title": title, "url": url, "source": source})
                 continue
 
-            if not is_coal_related(blob):
+            if not is_coal_related(blob) and not is_china_safety_event_text(blob):
                 skipped.append({"reason": "not_coal_related_after_fetch", "title": title, "url": url, "source": source})
                 continue
 
@@ -318,11 +319,11 @@ def normalize_and_fetch_details(raw_candidates, start_dt, end_dt) -> Tuple[list,
 
         blob = f"{title} {content} {context}"
 
-        if _looks_bad(blob) and not _looks_good(title) and not _is_important_coal_futures_item(blob):
+        if _looks_bad(blob) and not _looks_good(title) and not _is_important_coal_futures_item(blob) and not is_china_safety_event_text(blob):
             skipped.append({"reason": "bad_keyword_after_fetch", "title": title, "url": url, "source": source})
             continue
 
-        if not is_coal_related(blob):
+        if not is_coal_related(blob) and not is_china_safety_event_text(blob):
             skipped.append({"reason": "not_coal_related_after_fetch", "title": title, "url": url, "source": source})
             continue
 
