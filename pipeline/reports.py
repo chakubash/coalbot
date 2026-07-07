@@ -12,6 +12,8 @@ from prompts import build_report_prompt
 from storage import save_jsonl
 from pipeline.facts import analyze_article, extract_json_from_text
 from pipeline.scoring import score_event
+from pipeline.safety_terms import is_china_safety_event_text
+from sources.client_news import collect_client_news, append_client_news_sections
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -193,6 +195,8 @@ def _quick_score(article: dict) -> int:
         score += 12
     if any(x in text for x in ["policy", "permit", "批准", "政策"]):
         score += 10
+    if is_china_safety_event_text(text):
+        score += 1000
     if any(x in text for x in ["weekly:", "review:", "daily track", "market in figures"]):
         score -= 8
     if any(x in text for x in ["cci chinese", "daily index"]):
@@ -229,6 +233,11 @@ def _prefilter_articles_for_llm(articles: list) -> list:
     for art in articles:
         txt = _txt(art)
         has_china = any(t.lower() in txt for t in china_terms)
+        is_china_safety = is_china_safety_event_text(txt)
+
+        if is_china_safety:
+            filtered.append(art)
+            continue
 
         # Hard remove obvious foreign accident noise.
         if any(t.lower() in txt for t in accident_noise) and not has_china:
@@ -241,6 +250,8 @@ def _prefilter_articles_for_llm(articles: list) -> list:
         filtered.append(art)
 
     articles = filtered
+
+    forced_prefilter = [art for art in articles if is_china_safety_event_text(_txt(art))]
 
     ranked = []
     for art in articles:
@@ -282,6 +293,10 @@ def _prefilter_articles_for_llm(articles: list) -> list:
             selected.append(art)
             if len(selected) >= 16:
                 break
+
+    if forced_prefilter:
+        forced_urls = {str(art.get("url", "") or "") for art in forced_prefilter}
+        selected = forced_prefilter + [art for art in selected if str(art.get("url", "") or "") not in forced_urls]
 
     return selected[:16]
 
@@ -396,6 +411,30 @@ def _dedupe_top_rows(rows: list) -> list:
     return kept
 
 
+def _fallback_top_from_analyzed(analyzed: list, limit: int = 5) -> list:
+    """Use strongest analyzed rows if strict China/top gates produced an empty selection."""
+    usable = []
+    for row in analyzed or []:
+        a = row.get("analysis", {}) or {}
+        if not a.get("relevant_to_coal", True):
+            continue
+        if row.get("score", 0) <= 0 and int(a.get("importance_score", 0) or 0) <= 0:
+            continue
+        usable.append(row)
+
+    if not usable:
+        usable = list(analyzed or [])
+
+    usable.sort(
+        key=lambda row: (
+            int(row.get("score", 0) or 0),
+            int((row.get("analysis", {}) or {}).get("importance_score", 0) or 0),
+        ),
+        reverse=True,
+    )
+    return usable[:limit]
+
+
 
 
 def _get_title(kind, end_dt):
@@ -441,6 +480,20 @@ def build_bilingual_summary_for_range(articles, previous_summary_ru, start_dt, e
     today_str = end_dt.strftime("%Y-%m-%d")
     report_date_ru = _format_ru_report_date(end_dt)
     report_date_zh = _format_zh_report_date(end_dt)
+
+    def _should_add_client_news():
+        return str(kind or "").lower() not in ("weekly", "monthly")
+
+    def _load_client_news_items():
+        if not _should_add_client_news():
+            return []
+        try:
+            items = collect_client_news(start_dt, end_dt)
+            save_jsonl(os.path.join(run_dir, "client_news.jsonl"), items)
+            return items
+        except Exception:
+            save_jsonl(os.path.join(run_dir, "client_news.jsonl"), [])
+            return []
 
     candidate_articles = _prefilter_articles_for_llm(articles)
     cache = _load_cache()
@@ -751,7 +804,7 @@ def build_bilingual_summary_for_range(articles, previous_summary_ru, start_dt, e
             has_foreign = any(x in text for x in foreign_terms)
 
             # Для китайских аварий/проверок — всегда top-candidate.
-            return has_accident and has_china and not has_foreign
+            return is_china_safety_event_text(text) or (has_accident and has_china and not has_foreign)
         except Exception:
             return False
 
@@ -793,6 +846,9 @@ def build_bilingual_summary_for_range(articles, previous_summary_ru, start_dt, e
     # Не добираем мусором: лучше 3–4 сильных события, чем 5–6 слабых.
     top = selected[:5]
 
+    if not top and analyzed:
+        top = _fallback_top_from_analyzed(analyzed)
+
     if not top:
         is_weekend = False
         try:
@@ -833,6 +889,9 @@ def build_bilingual_summary_for_range(articles, previous_summary_ru, start_dt, e
 
         ru = _sanitize_report_text(ru)
         zh = _sanitize_report_text(zh)
+
+        if _should_add_client_news():
+            ru, zh = append_client_news_sections(ru, zh, _load_client_news_items())
 
         with open(os.path.join(run_dir, "final_summary_ru.txt"), "w", encoding="utf-8") as f:
             f.write(ru)
@@ -1073,6 +1132,9 @@ def build_bilingual_summary_for_range(articles, previous_summary_ru, start_dt, e
 
     ru = _sanitize_report_text(ru)
     zh = _sanitize_report_text(zh)
+
+    if _should_add_client_news():
+        ru, zh = append_client_news_sections(ru, zh, _load_client_news_items())
 
     with open(os.path.join(run_dir, "final_summary_ru.txt"), "w", encoding="utf-8") as f:
         f.write(ru)
