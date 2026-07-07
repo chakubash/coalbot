@@ -6,6 +6,7 @@ from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
 from models import ArticleCandidate
+from pipeline.safety_terms import is_china_safety_event_text
 from config import MYSTEEL_FAST_URLS
 from utils import clean_text, md5_text, parse_dt_from_text
 
@@ -25,6 +26,8 @@ BAD_HINTS = [
 
 def _coal_enough(text: str) -> bool:
     low = (text or "").lower()
+    if is_china_safety_event_text(low):
+        return True
     if any(x.lower() in low for x in BAD_HINTS):
         return False
     return any(x.lower() in low for x in GOOD_HINTS)
