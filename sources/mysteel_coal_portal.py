@@ -3,6 +3,7 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 
 from models import ArticleCandidate
+from pipeline.safety_terms import is_china_safety_event_text
 from utils import fetch_html, clean_text, md5_text, parse_dt_from_text
 
 URLS = [
@@ -40,6 +41,8 @@ def _extract_parent_text(a):
 
 def _coal_enough(text: str) -> bool:
     low = (text or "").lower()
+    if is_china_safety_event_text(low):
+        return True
     if any(x.lower() in low for x in BAD_HINTS):
         return False
     return any(x.lower() in low for x in GOOD_HINTS)
