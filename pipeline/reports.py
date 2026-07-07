@@ -1,4 +1,49 @@
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+try:
+    from zoneinfo import ZoneInfo
+except Exception:
+    ZoneInfo = None
+
+REPORT_BEIJING_TZ = ZoneInfo("Asia/Shanghai") if ZoneInfo else timezone(timedelta(hours=8))
+
+
+def _to_report_dt(value):
+    if value is None or value == "":
+        return None
+
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+
+        try:
+            dt = datetime.fromisoformat(text)
+        except Exception:
+            dt = None
+            for fmt in (
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%d %H:%M",
+                "%Y/%m/%d %H:%M:%S",
+                "%Y/%m/%d %H:%M",
+                "%Y-%m-%d",
+                "%Y/%m/%d",
+            ):
+                try:
+                    dt = datetime.strptime(text, fmt)
+                    break
+                except Exception:
+                    pass
+            if dt is None:
+                return None
+
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=REPORT_BEIJING_TZ)
+    return dt.astimezone(REPORT_BEIJING_TZ)
+
 import json
 import os
 import hashlib
@@ -436,29 +481,24 @@ def _fallback_top_from_analyzed(analyzed: list, limit: int = 5) -> list:
 
 
 
-def _parse_report_dt(value: str):
-    if not value:
-        return None
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M"):
-        try:
-            return datetime.strptime(str(value), fmt)
-        except Exception:
-            pass
-    return None
+def _parse_report_dt(value):
+    return _to_report_dt(value)
 
-
-def _source_label(source: str) -> str:
-    source = str(source or "").lower()
-    if source.startswith("mysteel"):
+def _source_label(source):
+    s = str(source or "").strip().lower()
+    if not s:
+        return ""
+    if "mysteel" in s or "我的钢铁" in s:
         return "Mysteel"
-    if source == "sxcoal":
+    if "sxcoal" in s or "sx coal" in s:
         return "SXCoal"
-    if source == "cls":
+    if s == "cls" or "cls" in s or "财联社" in s:
         return "CLS"
     return ""
 
-
 def _fresh_source_rows(analyzed: list, start_dt, end_dt, limit_per_source: int = 4) -> dict:
+    start_dt_cmp = _to_report_dt(start_dt)
+    end_dt_cmp = _to_report_dt(end_dt)
     groups = {"Mysteel": [], "SXCoal": [], "CLS": []}
     seen = set()
     sorted_rows = sorted(analyzed or [], key=lambda r: int(r.get("score", 0) or 0), reverse=True)
@@ -475,7 +515,7 @@ def _fresh_source_rows(analyzed: list, start_dt, end_dt, limit_per_source: int =
             continue
 
         published_at = _parse_report_dt(art.get("published_at", ""))
-        if published_at and start_dt and end_dt and not (start_dt <= published_at <= end_dt):
+        if published_at and start_dt_cmp and end_dt_cmp and not (start_dt_cmp <= published_at <= end_dt_cmp):
             continue
 
         title = str(art.get("title", "") or a.get("headline_fact", "") or "").strip()
@@ -519,7 +559,7 @@ def _build_day_picture_ru(source_groups: dict, start_str: str, end_str: str) -> 
         return "За период свежих полезных сообщений из основных источников не найдено. Рынок выглядит спокойным, новых сигналов по ценам, поставкам или безопасности мало."
 
     all_text = " ".join(_short_ru_item(r).lower() for rows in source_groups.values() for r in rows)
-    parts = ["В источниках появились новые рабочие сигналы по рынку угля КНР."]
+    parts = [f"За период {start_str}–{end_str} найдено {total} свежих полезных сообщений из основных источников."]
     if any(x in all_text for x in ["事故", "遇难", "авар", "погиб", "安全", "停产整顿"]):
         parts.append("Главный риск — промышленная безопасность: такие новости важны для оценки возможных остановок шахт и реакции надзора.")
     if any(x in all_text for x in ["价格", "цена", "涨", "跌", "指数"]):
@@ -539,105 +579,11 @@ def _build_day_picture_zh(source_groups: dict, start_str: str, end_str: str) -> 
 
 
 def _log_report_builder_marker(marker: str):
-    if marker == "daily_source_sections":
-        marker = "daily_source_fallback"
     try:
         with open("bot.log", "a", encoding="utf-8") as f:
             f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} REPORT_BUILDER={marker}\n")
     except Exception:
         pass
-
-
-def _source_row_payload(row: dict) -> dict:
-    art = row.get("article", {}) or {}
-    a = row.get("analysis", {}) or {}
-    return {
-        "source": _source_label(art.get("source", "")),
-        "published_at": art.get("published_at", ""),
-        "title": art.get("title", ""),
-        "headline_fact": a.get("headline_fact", ""),
-        "what_happened": a.get("what_happened", ""),
-        "event_type": a.get("event_type", ""),
-        "segment": a.get("segment", ""),
-        "url": art.get("url", ""),
-        "score": row.get("score", 0),
-    }
-
-
-def _build_daily_source_prompt(start_dt, end_dt, source_groups: dict, client_items: list, safety_rows: list) -> str:
-    payload = {
-        "report_date": end_dt.strftime("%Y-%m-%d"),
-        "period_start": start_dt.strftime("%Y-%m-%d %H:%M"),
-        "period_end": end_dt.strftime("%Y-%m-%d %H:%M"),
-        "source_groups": {
-            label: [_source_row_payload(row) for row in rows]
-            for label, rows in source_groups.items()
-        },
-        "client_news": client_items or [],
-        "safety_high_priority": [_source_row_payload(row) for row in safety_rows],
-    }
-    return (
-        "Ты редактор ежедневной сводки для российского участника торговли углем с Китаем. "
-        "Напиши финальный отчет на русском и китайском по структурированным данным.\n\n"
-        "Верни строго JSON: {\"ru\": \"...\", \"zh\": \"...\"}.\n\n"
-        "ОБЯЗАТЕЛЬНАЯ структура русской версии:\n"
-        "⬛ Оперативная сводка по рынку угля КНР\n"
-        "Дата: ...\n"
-        "Период: ...\n\n"
-        "⬛ Картина дня\n"
-        "2–4 коротких абзаца живым деловым русским языком: что произошло, почему это важно для торговли углем, закупок, логистики и переговоров.\n\n"
-        "⬛ Новости из источников\n"
-        "Группируй только имеющиеся источники: ▪️ Mysteel, ▪️ SXCoal, ▪️ CLS. В каждом пункте 1–2 предложения максимум и строка Ссылка: ...\n\n"
-        "⬛ Новости по нашим клиентам\n"
-        "Если client_news пустой, напиши ровно: По клиентам из списка свежих релевантных новостей за период не найдено.\n\n"
-        "Правила:\n"
-        "- Русская версия должна быть на русском. Китайские заголовки переводи; не вставляй сырые китайские заголовки в русский текст.\n"
-        "- События по авариям, безопасности, остановкам шахт и проверкам обязательно включай, если они есть в safety_high_priority или source_groups.\n"
-        "- Не используй importance labels, debug/status blocks или длинный анализ после каждой новости.\n"
-        "- Не пиши шаблонную фразу ‘найдено N свежих полезных сообщений’.\n"
-        "- Запрещенные старые заголовки: Утренняя сводка по рынку угля КНР; Картина утра; Что изменилось с прошлого дня; Ключевые события утра; Карта рынка; Что отслеживать; Что важно завтра.\n"
-        "- Китайская версия должна быть естественной китайской версией того же отчета и идти отдельно в поле zh.\n\n"
-        "СТРУКТУРИРОВАННЫЕ ДАННЫЕ:\n"
-        + json.dumps(payload, ensure_ascii=False, indent=2)
-    )
-
-
-def _has_daily_report_banned_text(ru: str) -> bool:
-    banned = [
-        "Утренняя сводка по рынку угля КНР",
-        "Картина утра",
-        "Что изменилось с прошлого дня",
-        "Ключевые события утра",
-        "Карта рынка",
-        "Что отслеживать",
-        "Что важно завтра",
-        "найдено ",
-        " свежих полезных сообщений",
-    ]
-    return any(x in (ru or "") for x in banned)
-
-
-def _build_source_news_report_llm(start_dt, end_dt, analyzed: list, client_items: list) -> dict:
-    source_groups = _fresh_source_rows(analyzed, start_dt, end_dt)
-    safety_rows = [
-        row for rows in source_groups.values() for row in rows
-        if is_china_safety_event_text(" ".join([
-            str((row.get("article", {}) or {}).get("title", "")),
-            str((row.get("article", {}) or {}).get("content", "")),
-            str((row.get("analysis", {}) or {}).get("headline_fact", "")),
-            str((row.get("analysis", {}) or {}).get("what_happened", "")),
-        ]))
-    ]
-    prompt = _build_daily_source_prompt(start_dt, end_dt, source_groups, client_items, safety_rows)
-    response = client.responses.create(model="gpt-5.4", input=prompt)
-    parsed = extract_json_from_text(response.output_text.strip())
-    if not parsed or not parsed.get("ru") or not parsed.get("zh"):
-        raise ValueError("daily_source_llm_invalid_json")
-    ru = _sanitize_report_text(str(parsed["ru"]).strip())
-    zh = _sanitize_report_text(str(parsed["zh"]).strip())
-    if _has_daily_report_banned_text(ru):
-        raise ValueError("daily_source_llm_banned_text")
-    return {"ru": ru, "zh": zh}
 
 
 def _build_source_news_report(ru_title: str, zh_title: str, start_dt, end_dt, analyzed: list, client_items: list) -> dict:
@@ -747,26 +693,12 @@ def build_bilingual_summary_for_range(articles, previous_summary_ru, start_dt, e
     def _load_client_news_items():
         if not _should_add_client_news():
             return []
-        debug_rows = []
         try:
-            items = collect_client_news(start_dt, end_dt, debug_rows=debug_rows)
+            items = collect_client_news(start_dt, end_dt)
             save_jsonl(os.path.join(run_dir, "client_news.jsonl"), items)
-            save_jsonl(os.path.join(run_dir, "client_news_debug.jsonl"), debug_rows)
             return items
-        except Exception as exc:
-            debug_rows.append({
-                "client": "",
-                "alias": "",
-                "query": "",
-                "status": "error",
-                "result_count": 0,
-                "parsed_count": 0,
-                "accepted_count": 0,
-                "rejection_reason": f"collector_error:{type(exc).__name__}",
-                "elapsed_sec": 0,
-            })
+        except Exception:
             save_jsonl(os.path.join(run_dir, "client_news.jsonl"), [])
-            save_jsonl(os.path.join(run_dir, "client_news_debug.jsonl"), debug_rows)
             return []
 
     candidate_articles = _prefilter_articles_for_llm(articles)
@@ -1124,13 +1056,9 @@ def build_bilingual_summary_for_range(articles, previous_summary_ru, start_dt, e
         top = _fallback_top_from_analyzed(analyzed)
 
     if _should_add_client_news():
+        _log_report_builder_marker("daily_source_sections")
         client_items = _load_client_news_items()
-        try:
-            _log_report_builder_marker("daily_source_llm")
-            result = _build_source_news_report_llm(start_dt, end_dt, analyzed, client_items)
-        except Exception:
-            _log_report_builder_marker("daily_source_fallback")
-            result = _build_source_news_report(title_ru, title_zh, start_dt, end_dt, analyzed, client_items)
+        result = _build_source_news_report(title_ru, title_zh, start_dt, end_dt, analyzed, client_items)
         with open(os.path.join(run_dir, "final_summary_ru.txt"), "w", encoding="utf-8") as f:
             f.write(result["ru"])
         with open(os.path.join(run_dir, "final_summary_zh.txt"), "w", encoding="utf-8") as f:
