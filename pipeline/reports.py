@@ -1,4 +1,49 @@
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+try:
+    from zoneinfo import ZoneInfo
+except Exception:
+    ZoneInfo = None
+
+REPORT_BEIJING_TZ = ZoneInfo("Asia/Shanghai") if ZoneInfo else timezone(timedelta(hours=8))
+
+
+def _to_report_dt(value):
+    if value is None or value == "":
+        return None
+
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+
+        try:
+            dt = datetime.fromisoformat(text)
+        except Exception:
+            dt = None
+            for fmt in (
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%d %H:%M",
+                "%Y/%m/%d %H:%M:%S",
+                "%Y/%m/%d %H:%M",
+                "%Y-%m-%d",
+                "%Y/%m/%d",
+            ):
+                try:
+                    dt = datetime.strptime(text, fmt)
+                    break
+                except Exception:
+                    pass
+            if dt is None:
+                return None
+
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=REPORT_BEIJING_TZ)
+    return dt.astimezone(REPORT_BEIJING_TZ)
+
 import json
 import os
 import hashlib
@@ -436,29 +481,24 @@ def _fallback_top_from_analyzed(analyzed: list, limit: int = 5) -> list:
 
 
 
-def _parse_report_dt(value: str):
-    if not value:
-        return None
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M"):
-        try:
-            return datetime.strptime(str(value), fmt)
-        except Exception:
-            pass
-    return None
+def _parse_report_dt(value):
+    return _to_report_dt(value)
 
-
-def _source_label(source: str) -> str:
-    source = str(source or "").lower()
-    if source.startswith("mysteel"):
+def _source_label(source):
+    s = str(source or "").strip().lower()
+    if not s:
+        return ""
+    if "mysteel" in s or "我的钢铁" in s:
         return "Mysteel"
-    if source == "sxcoal":
+    if "sxcoal" in s or "sx coal" in s:
         return "SXCoal"
-    if source == "cls":
+    if s == "cls" or "cls" in s or "财联社" in s:
         return "CLS"
     return ""
 
-
 def _fresh_source_rows(analyzed: list, start_dt, end_dt, limit_per_source: int = 4) -> dict:
+    start_dt_cmp = _to_report_dt(start_dt)
+    end_dt_cmp = _to_report_dt(end_dt)
     groups = {"Mysteel": [], "SXCoal": [], "CLS": []}
     seen = set()
     sorted_rows = sorted(analyzed or [], key=lambda r: int(r.get("score", 0) or 0), reverse=True)
@@ -475,7 +515,7 @@ def _fresh_source_rows(analyzed: list, start_dt, end_dt, limit_per_source: int =
             continue
 
         published_at = _parse_report_dt(art.get("published_at", ""))
-        if published_at and start_dt and end_dt and not (start_dt <= published_at <= end_dt):
+        if published_at and start_dt_cmp and end_dt_cmp and not (start_dt_cmp <= published_at <= end_dt_cmp):
             continue
 
         title = str(art.get("title", "") or a.get("headline_fact", "") or "").strip()

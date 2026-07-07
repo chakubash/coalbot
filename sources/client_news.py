@@ -3,7 +3,52 @@ import json
 import re
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+try:
+    from zoneinfo import ZoneInfo
+except Exception:
+    ZoneInfo = None
+
+CLIENT_NEWS_BEIJING_TZ = ZoneInfo("Asia/Shanghai") if ZoneInfo else timezone(timedelta(hours=8))
+
+
+def _to_client_news_dt(value):
+    if value is None or value == "":
+        return None
+
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+
+        try:
+            dt = datetime.fromisoformat(text)
+        except Exception:
+            dt = None
+            for fmt in (
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%d %H:%M",
+                "%Y/%m/%d %H:%M:%S",
+                "%Y/%m/%d %H:%M",
+                "%Y-%m-%d",
+                "%Y/%m/%d",
+            ):
+                try:
+                    dt = datetime.strptime(text, fmt)
+                    break
+                except Exception:
+                    pass
+            if dt is None:
+                return None
+
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=CLIENT_NEWS_BEIJING_TZ)
+    return dt.astimezone(CLIENT_NEWS_BEIJING_TZ)
+
 from pathlib import Path
 from typing import Iterable, Optional
 from urllib.parse import quote_plus, urlparse, parse_qs
@@ -154,7 +199,9 @@ def _unwrap_baidu_url(url: str) -> str:
 
 
 def parse_search_result_rows(rows: list[dict], client: dict, start_dt: datetime, end_dt: datetime, now: Optional[datetime] = None) -> list[dict]:
-    now = now or end_dt or datetime.utcnow()
+    start_dt = _to_client_news_dt(start_dt)
+    end_dt = _to_client_news_dt(end_dt)
+    now = _to_client_news_dt(now or end_dt or datetime.utcnow())
     out = []
     aliases = [client["name"].lower()] + [a.lower() for a in client.get("aliases", [])]
     for row in rows:
@@ -172,6 +219,9 @@ def parse_search_result_rows(rows: list[dict], client: dict, start_dt: datetime,
             continue
         dt = row.get("published_dt") or _parse_baidu_time(" ".join([row.get("date", ""), snippet]), now)
         if dt:
+            dt = _to_client_news_dt(dt)
+            if not dt:
+                continue
             if dt < (start_dt - timedelta(hours=48)) or dt > (end_dt + timedelta(hours=2)):
                 continue
             published_at = dt.strftime("%Y-%m-%d %H:%M")
