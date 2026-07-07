@@ -1,3 +1,4 @@
+import re
 from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
@@ -23,9 +24,31 @@ BAD_HINTS = [
 ]
 
 
+GENERIC_LINK_TEXT = {"详情", "查看", "更多", "more", "原文", "全文"}
+
+
+def _clean_candidate_title(text: str) -> str:
+    text = clean_text(text)
+    text = re.sub(r"^(?:·|•|-|\d{1,2}[:：])\s*", "", text).strip()
+    return text
+
+
+def _anchor_title(a) -> str:
+    for attr in ("title", "aria-label"):
+        val = _clean_candidate_title(a.get(attr) or "")
+        if val and val.lower() not in GENERIC_LINK_TEXT:
+            return val
+    title = _clean_candidate_title(a.get_text(" ", strip=True))
+    if title.lower() in GENERIC_LINK_TEXT:
+        return ""
+    return title
+
+
 def _extract_parent_text(a):
+    """Return only the nearest list-item sized context, never the whole portal list."""
+    title = _anchor_title(a)
     node = a
-    best = ""
+    fallback = title
     for _ in range(5):
         if not node:
             break
@@ -33,10 +56,14 @@ def _extract_parent_text(a):
             txt = clean_text(node.get_text(" ", strip=True))
         except Exception:
             txt = ""
-        if len(txt) > len(best):
-            best = txt
+        if txt and title and title in txt and len(txt) <= 600:
+            return txt[:600]
+        if txt and getattr(node, "name", "") in ("li", "tr") and len(txt) <= 600:
+            return clean_text(f"{title} {txt}")[:600]
+        if txt and len(txt) <= 200 and len(txt) > len(fallback):
+            fallback = clean_text(f"{title} {txt}")
         node = node.parent
-    return best[:2000]
+    return fallback[:600]
 
 
 def _coal_enough(text: str) -> bool:
@@ -61,26 +88,24 @@ def collect_links(max_pages: int = 10):
 
             soup = BeautifulSoup(html, "html.parser")
             page_hits = 0
-            page_limit = 15
+            page_limit = 40
 
             for a in soup.find_all("a", href=True):
                 href = (a.get("href") or "").strip()
-                title = clean_text(a.get_text(" ", strip=True))
+                title = _anchor_title(a)
 
                 if "/a/" not in href or not href.endswith(".html"):
                     continue
                 if len(title) < 6:
                     continue
-                if not _coal_enough(title):
+
+                context_text = _extract_parent_text(a)
+                if not _coal_enough(title + " " + context_text):
                     continue
 
                 full_url = urljoin(BASE_URL, href)
                 key = md5_text(title + "|" + full_url)
                 if key in seen:
-                    continue
-
-                context_text = _extract_parent_text(a)
-                if not _coal_enough(title + " " + context_text):
                     continue
 
                 list_dt = parse_dt_from_text(context_text) or parse_dt_from_text(title)

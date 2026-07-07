@@ -411,6 +411,30 @@ def _dedupe_top_rows(rows: list) -> list:
     return kept
 
 
+def _fallback_top_from_analyzed(analyzed: list, limit: int = 5) -> list:
+    """Use strongest analyzed rows if strict China/top gates produced an empty selection."""
+    usable = []
+    for row in analyzed or []:
+        a = row.get("analysis", {}) or {}
+        if not a.get("relevant_to_coal", True):
+            continue
+        if row.get("score", 0) <= 0 and int(a.get("importance_score", 0) or 0) <= 0:
+            continue
+        usable.append(row)
+
+    if not usable:
+        usable = list(analyzed or [])
+
+    usable.sort(
+        key=lambda row: (
+            int(row.get("score", 0) or 0),
+            int((row.get("analysis", {}) or {}).get("importance_score", 0) or 0),
+        ),
+        reverse=True,
+    )
+    return usable[:limit]
+
+
 
 
 def _get_title(kind, end_dt):
@@ -821,6 +845,9 @@ def build_bilingual_summary_for_range(articles, previous_summary_ru, start_dt, e
 
     # Не добираем мусором: лучше 3–4 сильных события, чем 5–6 слабых.
     top = selected[:5]
+
+    if not top and analyzed:
+        top = _fallback_top_from_analyzed(analyzed)
 
     if not top:
         is_weekend = False

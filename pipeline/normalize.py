@@ -34,7 +34,6 @@ CURRENT_YEAR = 2026
 NO_FETCH_SOURCES = {
     "mysteel_fast",
     "mysteel_jiaotan",
-    "mysteel_coal_portal",
     "mysteel_list_fallback",
     "cls",
 }
