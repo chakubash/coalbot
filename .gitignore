@@ -1,0 +1,42 @@
+# secrets
+.env
+*.env
+.env.*
+secrets/
+*.key
+*.pem
+
+# runtime state
+bot_state.json
+subscribers.json
+event_memory.json
+data/state.json
+data/subscribers.json
+data/event_memory.json
+data/cache.json
+data/_manual_summary.lock
+_manual_summary.lock
+
+# runs / caches / logs
+data_runs/
+browser_logs/
+*.log
+*.pid
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+
+# browser profiles / cookies
+browser_profiles/
+profiles/
+auth/session.json
+auth/*.json
+
+# venv
+venv/
+.venv/
+
+# local outputs
+/tmp/
+*.bak*

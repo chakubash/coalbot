@@ -1,0 +1,11 @@
+[0;1;32m●[0m coalbot-reports.service - Coal Reports Telegram Buttons
+     Loaded: loaded (]8;;file://7134981-fg676777.twc1.net/etc/systemd/system/coalbot-reports.service/etc/systemd/system/coalbot-reports.service]8;;; [0;1;32menabled[0m; preset: [0;1;32menabled[0m)
+     Active: [0;1;32mactive (running)[0m since Fri 2026-04-03 02:22:21 UTC; 18ms ago
+   Main PID: 7965 (python)
+      Tasks: 1 (limit: 4653)
+     Memory: 2.1M (peak: 2.2M)
+        CPU: 9ms
+     CGroup: /system.slice/coalbot-reports.service
+             └─[0;38;5;245m7965 /root/coalbot/venv/bin/python /root/coalbot/reports/manual_reports_bot.py[0m
+
+Apr 03 02:22:21 7134981-fg676777.twc1.net systemd[1]: Started coalbot-reports.service - Coal Reports Telegram Buttons.
