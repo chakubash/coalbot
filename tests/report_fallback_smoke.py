@@ -23,6 +23,7 @@ def main():
     old_client = reports.client
     old_analyze = reports.analyze_article
     old_score = reports.score_event
+    old_collect_client_news = reports.collect_client_news
     old_cache_load = reports._load_cache
     old_cache_save = reports._save_cache
     try:
@@ -39,6 +40,7 @@ def main():
             "should_enter_top8": True,
         }
         reports.score_event = lambda analysis, article: 70
+        reports.collect_client_news = lambda *args, **kwargs: []
         reports._load_cache = lambda: {}
         reports._save_cache = lambda cache: None
         with tempfile.TemporaryDirectory() as tmp:
@@ -60,6 +62,7 @@ def main():
         reports.client = old_client
         reports.analyze_article = old_analyze
         reports.score_event = old_score
+        reports.collect_client_news = old_collect_client_news
         reports._load_cache = old_cache_load
         reports._save_cache = old_cache_save
 

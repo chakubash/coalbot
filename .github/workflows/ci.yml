@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Syntax check
+        run: |
+          python -m py_compile \
+            main.py \
+            scheduler.py \
+            telegram_ui.py \
+            pipeline/reports.py \
+            pipeline/normalize.py \
+            pipeline/facts.py \
+            pipeline/scoring.py \
+            pipeline/headline_gatekeeper.py \
+            sources/client_news.py \
+            sources/mysteel_coal_portal.py
+
+      - name: Smoke tests
+        run: |
+          if [ -f tests/daily_report_format_smoke.py ]; then python tests/daily_report_format_smoke.py; fi
+          if [ -f tests/client_news_smoke.py ]; then python tests/client_news_smoke.py; fi
+          if [ -f tests/client_news_debug_smoke.py ]; then python tests/client_news_debug_smoke.py; fi
+          if [ -f tests/mysteel_portal_regression.py ]; then python tests/mysteel_portal_regression.py; fi
+          if [ -f tests/report_fallback_smoke.py ]; then python tests/report_fallback_smoke.py; fi
+          if [ -f tests/safety_collection_smoke.py ]; then python tests/safety_collection_smoke.py; fi

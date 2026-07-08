@@ -117,6 +117,7 @@ def _run_build(outputs):
     old_client = reports.client
     old_analyze = reports.analyze_article
     old_score = reports.score_event
+    old_collect_client_news = reports.collect_client_news
     old_cache_load = reports._load_cache
     old_cache_save = reports._save_cache
     old_marker = reports._log_report_builder_marker
@@ -126,6 +127,7 @@ def _run_build(outputs):
         reports.client = fake_client
         reports.analyze_article = _analysis_for
         reports.score_event = lambda analysis, article: int(analysis.get("importance_score", 0))
+        reports.collect_client_news = lambda *args, **kwargs: []
         reports._load_cache = lambda: {}
         reports._save_cache = lambda cache: None
         reports._log_report_builder_marker = lambda marker: markers.append(marker)
@@ -148,6 +150,7 @@ def _run_build(outputs):
         reports.client = old_client
         reports.analyze_article = old_analyze
         reports.score_event = old_score
+        reports.collect_client_news = old_collect_client_news
         reports._load_cache = old_cache_load
         reports._save_cache = old_cache_save
         reports._log_report_builder_marker = old_marker
