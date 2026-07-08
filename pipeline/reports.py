@@ -47,6 +47,7 @@ def _to_report_dt(value):
 import json
 import os
 import hashlib
+import re
 from pathlib import Path
 from difflib import SequenceMatcher
 from openai import OpenAI
