@@ -18,6 +18,7 @@ def accident_priority_boost(text: str) -> int:
 from datetime import datetime, timedelta
 from config import BEIJING_TZ
 from storage import load_event_memory, save_event_memory
+from pipeline.safety_terms import is_china_safety_event_text
 from utils import md5_text, is_price_event_text
 
 
@@ -134,7 +135,8 @@ def score_event(analysis: dict, article: dict = None):
     has_china_supplier = any(t in combined_text for t in china_supplier_terms)
     has_direct_trade = any(t in combined_text for t in direct_trade_terms)
     weak_global = any(t in combined_text for t in weak_global_terms)
-    accident_without_china_trade = any(t in combined_text for t in accident_terms) and not (has_china_core or has_direct_trade)
+    is_china_safety = is_china_safety_event_text(combined_text)
+    accident_without_china_trade = any(t in combined_text for t in accident_terms) and not (has_china_core or has_direct_trade or is_china_safety)
 
     # ===== Hard demotion/exclusion logic =====
     # Accidents outside China/import-to-China chain should not enter top unless direct supply/logistics impact is stated.
@@ -146,10 +148,10 @@ def score_event(analysis: dict, article: dict = None):
         score = min(score, 22)
 
     # Teasers/repeats remain weak.
-    if repeat_without_new_detail:
+    if repeat_without_new_detail and not is_china_safety:
         score -= 35
 
-    if analysis.get("should_enter_top8") is False:
+    if analysis.get("should_enter_top8") is False and not is_china_safety:
         score -= 25
 
     if not analysis.get("relevant_to_coal", True):
@@ -171,6 +173,10 @@ def score_event(analysis: dict, article: dict = None):
     # directly affect domestic supply, imports, port flows and buyer behavior.
     if has_china_core and event_type in ["accident", "shutdown", "safety", "policy"]:
         score += 35
+
+    if is_china_safety:
+        score = max(score, 90)
+        score += 40
 
     # Suppliers matter only when connected to seaborne/import/CFR/China context.
     if has_china_supplier and any(x in combined_text for x in ["import", "export", "shipment", "cfr", "fob", "port", "cargo", "进口", "出口", "发运", "到港"]):
