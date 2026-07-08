@@ -62,6 +62,7 @@ from pipeline.safety_terms import is_china_safety_event_text
 from sources.client_news import collect_client_news, append_client_news_sections
 
 client = OpenAI(api_key=OPENAI_API_KEY)
+REPORT_BUILDER_DAILY_SOURCE_LLM = "REPORT_BUILDER=daily_source_llm"
 
 RU_WEEKDAYS = {
     0: "Понедельник",
@@ -560,7 +561,7 @@ def _build_day_picture_ru(source_groups: dict, start_str: str, end_str: str) -> 
         return "За период свежих полезных сообщений из основных источников не найдено. Рынок выглядит спокойным, новых сигналов по ценам, поставкам или безопасности мало."
 
     all_text = " ".join(_short_ru_item(r).lower() for rows in source_groups.values() for r in rows)
-    parts = [f"За период {start_str}–{end_str} найдено {total} свежих полезных сообщений из основных источников."]
+    parts = [f"За период {start_str}–{end_str} в основных источниках появились новые рыночные сообщения."]
     if any(x in all_text for x in ["事故", "遇难", "авар", "погиб", "安全", "停产整顿"]):
         parts.append("Главный риск — промышленная безопасность: такие новости важны для оценки возможных остановок шахт и реакции надзора.")
     if any(x in all_text for x in ["价格", "цена", "涨", "跌", "指数"]):
@@ -576,7 +577,7 @@ def _build_day_picture_zh(source_groups: dict, start_str: str, end_str: str) -> 
     total = sum(len(v) for v in source_groups.values())
     if not total:
         return "本期主要来源未发现新的有效消息。市场整体较平稳，价格、供应和安全方面的新信号较少。"
-    return f"{start_str}–{end_str}期间，主要来源共有{total}条较有价值的新消息。整体来看，市场以日常价格、供应和安全信息为主，需要继续关注矿山安全、港口库存和采购节奏。"
+    return f"{start_str}–{end_str}期间，主要来源出现了新的市场消息。整体来看，市场以价格、供应和安全信息为主，需要继续关注矿山安全、港口库存和采购节奏。"
 
 
 def _log_report_builder_marker(marker: str):
@@ -585,6 +586,140 @@ def _log_report_builder_marker(marker: str):
             f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} REPORT_BUILDER={marker}\n")
     except Exception:
         pass
+
+
+def _is_valid_report_url(url: str) -> bool:
+    low = str(url or "").strip().lower()
+    return low.startswith("http://") or low.startswith("https://")
+
+
+def _source_row_payload(row: dict) -> dict:
+    art = row.get("article", {}) or {}
+    a = row.get("analysis", {}) or {}
+    url = art.get("url", "")
+    return {
+        "source": _source_label(art.get("source", "")),
+        "published_at": art.get("published_at", ""),
+        "title": art.get("title", ""),
+        "headline_fact": a.get("headline_fact", ""),
+        "what_happened": a.get("what_happened", ""),
+        "event_type": a.get("event_type", ""),
+        "segment": a.get("segment", ""),
+        "url": url if _is_valid_report_url(url) else "",
+        "score": row.get("score", 0),
+    }
+
+
+def _daily_title_hint(kind, end_dt) -> str:
+    k = str(kind or "").lower()
+    date_ru = f"{end_dt.day} {RU_MONTHS_GEN[end_dt.month]} {end_dt.year} года"
+    if k in ("12", "morning") or "morning" in k or "утр" in k:
+        return f"⬛ Утренняя сводка по рынку угля КНР за {date_ru}"
+    if k in ("20", "evening") or "evening" in k or "вечер" in k:
+        return f"⬛ Вечерняя сводка по рынку угля КНР за {date_ru}"
+    return f"⬛ Оперативная сводка по рынку угля КНР за {date_ru}"
+
+
+def _period_hint_ru(start_dt, end_dt) -> str:
+    return (
+        f"Период: с {start_dt.strftime('%H:%M')} "
+        f"{start_dt.day} {RU_MONTHS_GEN[start_dt.month]} "
+        f"до {end_dt.strftime('%H:%M')} {end_dt.day} {RU_MONTHS_GEN[end_dt.month]} по Пекину"
+    )
+
+
+def _build_daily_source_prompt(start_dt, end_dt, source_groups: dict, client_items: list, kind=None) -> str:
+    payload = {
+        "report_date": end_dt.strftime("%Y-%m-%d"),
+        "title_hint_ru": _daily_title_hint(kind, end_dt),
+        "period_hint_ru": _period_hint_ru(start_dt, end_dt),
+        "source_groups": {
+            label: [_source_row_payload(row) for row in rows]
+            for label, rows in source_groups.items()
+        },
+        "client_news": client_items or [],
+    }
+    return (
+        "Ты редактор ежедневной сводки для российского участника торговли углем с Китаем. "
+        "Напиши качественный финальный отчет на русском и китайском по структурированным данным.\n\n"
+        "Верни строго JSON: {\"ru\": \"...\", \"zh\": \"...\"}.\n\n"
+        "ОБЯЗАТЕЛЬНАЯ структура русской версии:\n"
+        f"{payload['title_hint_ru']}\n"
+        f"{payload['period_hint_ru']}\n\n"
+        "⬛ Картина дня\n"
+        "2–4 коротких абзаца живым деловым русским языком: что произошло, тон рынка, почему это важно для продаж/закупок угля, логистики и переговоров.\n\n"
+        "⬛ Новости из источников\n"
+        "Группируй только имеющиеся источники: ▪️ Mysteel, ▪️ SXCoal, ▪️ CLS. В каждом пункте русский переведенный заголовок/краткий факт, 1–2 предложения максимум и строка Ссылка: ... только для валидного http/https URL.\n\n"
+        "⬛ Иные новости\n"
+        "Если client_news пустой, напиши ровно: Свежих релевантных новостей по отслеживаемым компаниям за период не найдено.\n\n"
+        "Запреты для русской версии: не вставляй китайские иероглифы; не вставляй javascript:void(0); не используй старые заголовки Картина утра, Что изменилось с прошлого дня, Ключевые события утра, Карта рынка, Что отслеживать, Что важно завтра; не пиши шаблонную счетную фразу о количестве свежих полезных сообщений; не используй ISO-формат в строке периода.\n"
+        "Китайская версия должна быть естественной китайской версией того же отчета и идти отдельно в поле zh.\n\n"
+        "СТРУКТУРИРОВАННЫЕ ДАННЫЕ:\n"
+        + json.dumps(payload, ensure_ascii=False, indent=2)
+    )
+
+
+def _daily_report_validation_errors(ru: str) -> list[str]:
+    text = ru or ""
+    errors = []
+    for item in [
+        "Картина утра",
+        "Что изменилось с прошлого дня",
+        "Ключевые события утра",
+        "Карта рынка",
+        "Что отслеживать",
+        "Что важно завтра",
+        "importance",
+        "debug",
+        "status",
+    ]:
+        if item.lower() in text.lower():
+            errors.append(f"banned:{item}")
+    if re.search(r"найдено\s+\d+\s+свежих\s+полезных\s+сообщ", text, flags=re.I):
+        errors.append("generic_count_phrase")
+    if re.search(r"[\u4e00-\u9fff]", text):
+        errors.append("raw_chinese_in_ru")
+    if "javascript:void(0)" in text.lower():
+        errors.append("invalid_javascript_url")
+    first_line = text.strip().splitlines()[0] if text.strip().splitlines() else ""
+    if "сводка по рынку угля кнр" in first_line.lower() and " за " not in first_line.lower():
+        errors.append("title_without_date")
+    for line in text.splitlines():
+        if line.strip().lower().startswith("период:") and re.search(r"\d{4}-\d{2}-\d{2}", line):
+            errors.append("iso_period")
+            break
+    for section in ("Картина дня", "Новости из источников", "Иные новости"):
+        if section not in text:
+            errors.append(f"missing:{section}")
+    return errors
+
+
+def _call_daily_source_llm(prompt: str) -> dict:
+    response = client.responses.create(model="gpt-5.4", input=prompt)
+    parsed = extract_json_from_text(response.output_text.strip())
+    if not parsed or not parsed.get("ru") or not parsed.get("zh"):
+        raise ValueError("daily_source_llm_invalid_json")
+    ru = _sanitize_report_text(str(parsed["ru"]).strip())
+    zh = _sanitize_report_text(str(parsed["zh"]).strip())
+    errors = _daily_report_validation_errors(ru)
+    if errors:
+        raise ValueError("daily_source_llm_banned_text:" + ",".join(errors))
+    return {"ru": ru, "zh": zh}
+
+
+def _build_source_news_report_llm(start_dt, end_dt, analyzed: list, client_items: list, kind=None) -> dict:
+    source_groups = _fresh_source_rows(analyzed, start_dt, end_dt)
+    prompt = _build_daily_source_prompt(start_dt, end_dt, source_groups, client_items, kind=kind)
+    try:
+        return _call_daily_source_llm(prompt)
+    except Exception as first_error:
+        corrective_prompt = (
+            prompt
+            + "\n\nПРЕДЫДУЩИЙ ОТВЕТ НЕ ПРОШЕЛ ВАЛИДАЦИЮ: "
+            + str(first_error)
+            + "\nПерепиши заново. Русский раздел: без китайских иероглифов, без javascript:void(0), без старых заголовков, без ISO-периода, без счетной шаблонной фразы."
+        )
+        return _call_daily_source_llm(corrective_prompt)
 
 
 def _build_source_news_report(ru_title: str, zh_title: str, start_dt, end_dt, analyzed: list, client_items: list) -> dict:
@@ -1057,9 +1192,16 @@ def build_bilingual_summary_for_range(articles, previous_summary_ru, start_dt, e
         top = _fallback_top_from_analyzed(analyzed)
 
     if _should_add_client_news():
-        _log_report_builder_marker("daily_source_sections")
         client_items = _load_client_news_items()
-        result = _build_source_news_report(title_ru, title_zh, start_dt, end_dt, analyzed, client_items)
+        try:
+            _log_report_builder_marker("daily_source_llm")
+            result = _build_source_news_report_llm(start_dt, end_dt, analyzed, client_items, kind=kind)
+        except Exception:
+            _log_report_builder_marker("daily_source_fallback")
+            result = {
+                "ru": "Не удалось подготовить качественную AI-сводку. Попробуйте позже.",
+                "zh": "未能生成高质量AI简报，请稍后再试。",
+            }
         with open(os.path.join(run_dir, "final_summary_ru.txt"), "w", encoding="utf-8") as f:
             f.write(result["ru"])
         with open(os.path.join(run_dir, "final_summary_zh.txt"), "w", encoding="utf-8") as f:
