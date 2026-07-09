@@ -4,6 +4,7 @@ from openai import OpenAI
 
 from config import OPENAI_API_KEY
 from prompts import build_fact_prompt
+from pipeline.safety_terms import is_china_safety_event_text
 from utils import enforce_segment_consistency, detect_coal_commodity
 
 client = OpenAI(api_key=OPENAI_API_KEY)
@@ -216,7 +217,9 @@ def analyze_article(article):
     url = article.get("url", "")
     text_blob = f"{title}\n{content}".lower()
 
-    if any(x in text_blob for x in BLOCK_IN_FACTS):
+    is_china_safety = is_china_safety_event_text(text_blob)
+
+    if any(x in text_blob for x in BLOCK_IN_FACTS) and not is_china_safety:
         return {
             "relevant_to_coal": False,
             "new_fact_present": False,
@@ -290,6 +293,27 @@ def analyze_article(article):
     if str(parsed.get("headline_fact", "")).strip().lower() == "recommended articles":
         parsed["headline_fact"] = str(parsed.get("what_happened", "")).split("。")[0][:120] or "Новый материал по угольному рынку"
 
+    if is_china_safety:
+        parsed["relevant_to_coal"] = True
+        parsed["new_fact_present"] = True
+        parsed["repeat_without_new_detail"] = False
+        parsed["should_enter_top8"] = True
+        if parsed.get("event_type") not in ("accident", "safety", "shutdown"):
+            parsed["event_type"] = "safety"
+        parsed["importance_score"] = max(int(parsed.get("importance_score", 0) or 0), 80)
+        if parsed.get("exporter_relevance", "low") == "low":
+            parsed["exporter_relevance"] = "medium"
+
     parsed = enforce_segment_consistency(article, parsed)
     parsed = _apply_post_rules(article, parsed)
+
+    if is_china_safety:
+        parsed["relevant_to_coal"] = True
+        parsed["new_fact_present"] = True
+        parsed["repeat_without_new_detail"] = False
+        parsed["should_enter_top8"] = True
+        if parsed.get("event_type") not in ("accident", "safety", "shutdown"):
+            parsed["event_type"] = "safety"
+        parsed["importance_score"] = max(int(parsed.get("importance_score", 0) or 0), 80)
+
     return parsed
