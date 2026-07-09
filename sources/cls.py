@@ -3,6 +3,7 @@ import time
 from urllib.parse import urljoin
 from models import ArticleCandidate
 from config import CLS_COAL_URL
+from pipeline.safety_terms import is_china_safety_event_text
 from utils import soup_from_url, clean_text, is_coal_related, md5_text, extract_context_block_text, parse_dt_from_text
 
 
@@ -26,7 +27,7 @@ def collect_links(max_pages: int = 4):
 
             if not title or len(title) < 8:
                 continue
-            if not is_coal_related(title):
+            if not is_coal_related(title) and not is_china_safety_event_text(title):
                 continue
 
             full_url = urljoin("https://www.cls.cn", href)
