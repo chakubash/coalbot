@@ -8,50 +8,11 @@ try:
     from zoneinfo import ZoneInfo
 except Exception:
     ZoneInfo = None
-
-CLIENT_NEWS_BEIJING_TZ = ZoneInfo("Asia/Shanghai") if ZoneInfo else timezone(timedelta(hours=8))
-
-
-def _to_client_news_dt(value):
-    if value is None or value == "":
-        return None
-
-    if isinstance(value, datetime):
-        dt = value
-    else:
-        text = str(value).strip()
-        if not text:
-            return None
-        if text.endswith("Z"):
-            text = text[:-1] + "+00:00"
-
-        try:
-            dt = datetime.fromisoformat(text)
-        except Exception:
-            dt = None
-            for fmt in (
-                "%Y-%m-%d %H:%M:%S",
-                "%Y-%m-%d %H:%M",
-                "%Y/%m/%d %H:%M:%S",
-                "%Y/%m/%d %H:%M",
-                "%Y-%m-%d",
-                "%Y/%m/%d",
-            ):
-                try:
-                    dt = datetime.strptime(text, fmt)
-                    break
-                except Exception:
-                    pass
-            if dt is None:
-                return None
-
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=CLIENT_NEWS_BEIJING_TZ)
-    return dt.astimezone(CLIENT_NEWS_BEIJING_TZ)
-
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Iterable, Optional
 from urllib.parse import quote_plus, urlparse, parse_qs
+import xml.etree.ElementTree as ET
 
 import requests
 from bs4 import BeautifulSoup
@@ -59,16 +20,31 @@ from bs4 import BeautifulSoup
 from config import DATA_STATE_DIR, HEADERS
 from utils import clean_text, md5_text
 
+CLIENT_NEWS_BEIJING_TZ = ZoneInfo("Asia/Shanghai") if ZoneInfo else timezone(timedelta(hours=8))
+BOT_LOG_PATH = Path("bot.log")
+CACHE_PATH = Path(DATA_STATE_DIR) / "client_news_cache.json"
+
+PRIORITY_CLIENT_NAMES = (
+    "Baosteel", "Ansteel", "Valin", "Yongfeng", "Risun", "Ben Steel",
+    "Lingyuan Steel", "Liu Steel", "Yaxin", "Lubao", "SUMEC-Esteel", "CIEC",
+)
+
 CLIENT_WATCHLIST = [
     {"name": "Baosteel", "aliases": ["宝钢", "宝山钢铁"]},
     {"name": "Ansteel", "aliases": ["鞍钢"]},
+    {"name": "Valin", "aliases": ["华菱"]},
+    {"name": "Yongfeng", "aliases": ["永锋"]},
     {"name": "Risun", "aliases": ["旭阳"]},
+    {"name": "Ben Steel", "aliases": ["本钢"]},
+    {"name": "Lingyuan Steel", "aliases": ["凌源钢铁", "凌钢"]},
+    {"name": "Liu Steel", "aliases": ["柳钢"]},
+    {"name": "Yaxin", "aliases": ["亚新"]},
+    {"name": "Lubao", "aliases": ["鲁宝"]},
+    {"name": "SUMEC-Esteel", "aliases": ["苏美达", "SUMEC"]},
+    {"name": "CIEC", "aliases": ["中煤进出口"]},
     {"name": "Shengmeng-Xiangyu", "aliases": []},
     {"name": "Yuanli", "aliases": []},
     {"name": "Ganglu-AVIC", "aliases": []},
-    {"name": "Yongfeng", "aliases": ["永锋"]},
-    {"name": "Ben Steel", "aliases": ["本钢"]},
-    {"name": "Lingyuan Steel", "aliases": ["凌源钢铁", "凌钢"]},
     {"name": "HK Fertile", "aliases": []},
     {"name": "Ningbo Fuchen", "aliases": []},
     {"name": "Zenit-AVIC", "aliases": []},
@@ -79,20 +55,32 @@ CLIENT_WATCHLIST = [
     {"name": "Chengtong-Chongsteel", "aliases": []},
     {"name": "Sanming Steel", "aliases": ["三明钢铁"]},
     {"name": "Sinogiant", "aliases": []},
-    {"name": "SUMEC-Esteel", "aliases": ["苏美达", "SUMEC"]},
-    {"name": "Liu Steel", "aliases": ["柳钢"]},
-    {"name": "Yaxin", "aliases": ["亚新"]},
-    {"name": "Lubao", "aliases": ["鲁宝"]},
-    {"name": "Valin", "aliases": ["华菱"]},
     {"name": "Zhuokang", "aliases": []},
 ]
 
-QUERY_TERMS = ("煤炭", "焦煤", "焦炭", "钢铁", "采购", "港口", "事故", "停产", "环保", "亏损", "利润", "产量")
-RELEVANCE_TERMS = QUERY_TERMS + (
-    "煤", "焦", "高炉", "铁水", "炼钢", "供应", "合同", "招标", "运输", "物流", "安全", "检查", "减产", "复产"
+EN_QUERY_TERMS = ("", "steel", "production", "caster", "rolling mill", "blast furnace", "coke", "coal")
+ZH_QUERY_TERMS = ("钢铁", "投产", "产线", "高炉", "焦炭", "焦煤", "采购", "停产", "检修", "环保")
+
+BUSINESS_RELEVANCE_TERMS = (
+    # steelmaking / operations
+    "steel", "production", "capacity", "commission", "commissioned", "commissioning", "start up", "startup", "starts up",
+    "caster", "casting", "slab caster", "continuous caster", "rolling mill", "pipe line", "seamless pipe", "blast furnace",
+    "coke oven", "sinter", "maintenance", "shutdown", "outage", "production cut", "environmental", "safety",
+    "procurement", "raw material", "iron ore", "coal", "coking coal", "coke", "thermal coal", "port", "logistics",
+    "profit", "loss", "investment", "project", "contract", "order", "sms group", "primetals", "hydrogen", "m&a", "restructuring",
+    # Chinese equivalents
+    "钢铁", "投产", "产线", "连铸", "铸机", "轧机", "钢管", "无缝管", "高炉", "焦炉", "烧结", "检修", "停产",
+    "减产", "环保", "安全", "事故", "采购", "原料", "铁矿", "煤炭", "焦煤", "焦炭", "动力煤", "港口", "物流",
+    "利润", "亏损", "投资", "项目", "合同", "订单", "重组", "并购", "氢",
 )
-STALE_TERMS = ("公司简介", "企业简介", "公司概况", "百科", "招聘", "周报", "月报", "年度报告", "年报")
-CACHE_PATH = Path(DATA_STATE_DIR) / "client_news_cache.json"
+
+STALE_TERMS = (
+    "公司简介", "企业简介", "公司概况", "百科", "招聘", "周报", "月报", "年度报告", "年报",
+    "company profile", "overview", "corporate profile", "about us", "history", "annual report", "weekly", "monthly",
+)
+PHOTO_TERMS = ("reuters pictures", "reuters photo", "photo", "图片", "图集", "getty images")
+STOCK_ONLY_TERMS = ("stock", "share price", "shares", "rating", "price target", "dividend", "股票", "股价", "评级", "目标价")
+STOCK_OPERATIONAL_TERMS = ("production", "capacity", "plant", "mill", "blast furnace", "caster", "steel", "profit", "loss", "产量", "高炉", "投产", "钢铁")
 
 
 @dataclass
@@ -117,6 +105,61 @@ class ClientNewsItem:
         }
 
 
+def _to_client_news_dt(value):
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(text)
+        except Exception:
+            dt = None
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M", "%Y-%m-%d", "%Y/%m/%d"):
+                try:
+                    dt = datetime.strptime(text, fmt)
+                    break
+                except Exception:
+                    pass
+            if dt is None:
+                return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=CLIENT_NEWS_BEIJING_TZ)
+    return dt.astimezone(CLIENT_NEWS_BEIJING_TZ)
+
+
+def _log_client_news(message: str):
+    try:
+        with open(BOT_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} {message}\n")
+    except Exception:
+        pass
+
+
+def _debug_row(client="", alias="", query="", source_adapter="", status="", result_count=0, parsed_count=0,
+               accepted_count=0, title="", url="", published_at="", rejection_reason="", elapsed_sec=0.0) -> dict:
+    return {
+        "client": client,
+        "alias": alias,
+        "query": query,
+        "source_adapter": source_adapter,
+        "status": status,
+        "result_count": int(result_count or 0),
+        "parsed_count": int(parsed_count or 0),
+        "accepted_count": int(accepted_count or 0),
+        "title": title,
+        "url": url,
+        "published_at": published_at,
+        "rejection_reason": rejection_reason,
+        "elapsed_sec": round(float(elapsed_sec or 0.0), 3),
+    }
+
+
 def _load_cache() -> dict:
     try:
         if CACHE_PATH.exists():
@@ -134,24 +177,29 @@ def _save_cache(cache: dict):
         pass
 
 
-def _client_search_aliases(client: dict) -> list[str]:
-    aliases = list(client.get("aliases") or [])
-    if aliases:
-        return aliases[:2]
-    return [client["name"]]
+def _client_aliases(client: dict) -> list[str]:
+    aliases = [client["name"]] + list(client.get("aliases") or [])
+    out = []
+    for alias in aliases:
+        if alias and alias not in out:
+            out.append(alias)
+    return out
 
 
-def iter_client_queries(max_queries: int = 35) -> Iterable[tuple[dict, str]]:
+def iter_client_queries(max_queries: int = 20) -> Iterable[tuple[dict, str, str]]:
     made = 0
-    for client in CLIENT_WATCHLIST:
-        aliases = _client_search_aliases(client)
-        terms = ("煤炭", "钢铁", "采购") if client.get("aliases") else ("钢铁",)
+    priority = {name: i for i, name in enumerate(PRIORITY_CLIENT_NAMES)}
+    clients = sorted(CLIENT_WATCHLIST, key=lambda c: priority.get(c["name"], 999))
+    for client in clients:
+        aliases = _client_aliases(client)[:3]
         for alias in aliases:
+            terms = ZH_QUERY_TERMS if re.search(r"[\u4e00-\u9fff]", alias) else EN_QUERY_TERMS
             for term in terms:
                 if made >= max_queries:
                     return
+                query = f"{alias} {term}".strip()
                 made += 1
-                yield client, f"{alias} {term}"
+                yield client, alias, query
 
 
 def _parse_baidu_time(text: str, now: datetime) -> Optional[datetime]:
@@ -166,9 +214,9 @@ def _parse_baidu_time(text: str, now: datetime) -> Optional[datetime]:
         m = re.search(r"(\d+)\s*分钟前", text)
         if m:
             return now - timedelta(minutes=int(m.group(1)))
-    if "今天" in text:
+    if "today" in text.lower() or "今天" in text:
         return now.replace(hour=12, minute=0, second=0, microsecond=0)
-    if "昨天" in text or "昨日" in text:
+    if "yesterday" in text.lower() or "昨天" in text or "昨日" in text:
         return (now - timedelta(days=1)).replace(hour=12, minute=0, second=0, microsecond=0)
     m = re.search(r"(20\d{2})[-/年](\d{1,2})[-/月](\d{1,2})", text)
     if m:
@@ -198,47 +246,67 @@ def _unwrap_baidu_url(url: str) -> str:
     return url
 
 
-def parse_search_result_rows(rows: list[dict], client: dict, start_dt: datetime, end_dt: datetime, now: Optional[datetime] = None) -> list[dict]:
+def _row_rejection_reason(row: dict, client: dict, start_dt: datetime, end_dt: datetime, now: datetime) -> tuple[str, str]:
+    title = clean_text(row.get("title", ""))
+    snippet = clean_text(row.get("snippet", ""))
+    url = clean_text(row.get("url", ""))
+    source = clean_text(row.get("source", ""))
+    blob = f"{title} {snippet} {source} {url}".lower()
+    if not title or not url:
+        return "missing_title_or_url", ""
+    aliases = [a.lower() for a in _client_aliases(client)]
+    if not any(alias and alias.lower() in blob for alias in aliases):
+        return "client_alias_not_found", ""
+    if any(term.lower() in blob for term in PHOTO_TERMS) and "reuters" in blob:
+        return "reuters_photo_page", ""
+    if any(term.lower() in blob for term in STALE_TERMS):
+        return "stale_profile_or_report", ""
+    if any(term.lower() in blob for term in STOCK_ONLY_TERMS) and not any(term.lower() in blob for term in STOCK_OPERATIONAL_TERMS):
+        return "stock_only_without_operations", ""
+    if not any(term.lower() in blob for term in BUSINESS_RELEVANCE_TERMS):
+        return "no_business_relevance", ""
+
+    dt = row.get("published_dt") or _parse_baidu_time(" ".join([row.get("date", ""), snippet, source]), now)
+    if dt:
+        dt = _to_client_news_dt(dt)
+        if not dt:
+            return "unparseable_date", ""
+        if dt < (end_dt - timedelta(hours=72)) or dt > (end_dt + timedelta(hours=2)):
+            return "outside_72h_freshness", ""
+        return "", dt.strftime("%Y-%m-%d %H:%M")
+
+    freshness_text = f"{title} {snippet} {row.get('date', '')}".lower()
+    if not any(x in freshness_text for x in ("today", "yesterday", "今天", "昨日", "昨天", "小时前", "分钟前")):
+        return "missing_fresh_date", ""
+    return "", ""
+
+
+def parse_search_result_rows(rows: list[dict], client: dict, start_dt: datetime, end_dt: datetime,
+                             now: Optional[datetime] = None, return_reasons: bool = False):
     start_dt = _to_client_news_dt(start_dt)
     end_dt = _to_client_news_dt(end_dt)
     now = _to_client_news_dt(now or end_dt or datetime.utcnow())
     out = []
-    aliases = [client["name"].lower()] + [a.lower() for a in client.get("aliases", [])]
+    reasons = {}
     for row in rows:
+        reason, published_at = _row_rejection_reason(row, client, start_dt, end_dt, now)
+        if reason:
+            reasons[reason] = reasons.get(reason, 0) + 1
+            continue
         title = clean_text(row.get("title", ""))
         snippet = clean_text(row.get("snippet", ""))
         url = clean_text(row.get("url", ""))
-        blob = f"{title} {snippet}".lower()
-        if not title or not url:
-            continue
-        if not any(alias and alias.lower() in blob for alias in aliases):
-            continue
-        if any(term.lower() in blob for term in STALE_TERMS):
-            continue
-        if not any(term.lower() in blob for term in RELEVANCE_TERMS):
-            continue
-        dt = row.get("published_dt") or _parse_baidu_time(" ".join([row.get("date", ""), snippet]), now)
-        if dt:
-            dt = _to_client_news_dt(dt)
-            if not dt:
-                continue
-            if dt < (start_dt - timedelta(hours=48)) or dt > (end_dt + timedelta(hours=2)):
-                continue
-            published_at = dt.strftime("%Y-%m-%d %H:%M")
-        else:
-            freshness_text = f"{title} {snippet} {row.get('date', '')}"
-            if not any(x in freshness_text for x in ("今天", "昨日", "昨天", "小时前", "分钟前")):
-                continue
-            published_at = ""
         out.append(ClientNewsItem(
             client=client["name"],
-            title=title[:120],
+            title=title[:140],
             url=url,
-            snippet=snippet[:180],
+            snippet=snippet[:220],
             source=clean_text(row.get("source", "")),
             published_at=published_at,
             query=clean_text(row.get("query", "")),
         ).as_dict())
+    if return_reasons:
+        return out, reasons
     return out
 
 
@@ -258,12 +326,50 @@ def _parse_baidu_html(html: str, query: str) -> list[dict]:
             "url": _unwrap_baidu_url(a.get("href", "")),
             "snippet": snippet,
             "date": snippet,
+            "source": clean_text(block.find(class_="c-color-gray").get_text(" ", strip=True)) if block.find(class_="c-color-gray") else "",
             "query": query,
         })
     return rows
 
 
-def _search_baidu(query: str, timeout: float = 6.0) -> list[dict]:
+def _parse_google_news_rss(xml_text: str, query: str) -> list[dict]:
+    rows = []
+    try:
+        root = ET.fromstring(xml_text or "")
+    except Exception:
+        return rows
+    for item in root.findall(".//item")[:10]:
+        title = clean_text(item.findtext("title") or "")
+        link = clean_text(item.findtext("link") or "")
+        source = clean_text(item.findtext("source") or "")
+        pub = clean_text(item.findtext("pubDate") or "")
+        snippet = clean_text(item.findtext("description") or "")
+        published_dt = None
+        if pub:
+            try:
+                published_dt = parsedate_to_datetime(pub)
+            except Exception:
+                published_dt = None
+        rows.append({
+            "title": title,
+            "url": link,
+            "snippet": snippet,
+            "date": pub,
+            "source": source,
+            "published_dt": published_dt,
+            "query": query,
+        })
+    return rows
+
+
+def _search_google_news_rss(query: str, timeout: float = 5.0) -> list[dict]:
+    url = f"https://news.google.com/rss/search?q={quote_plus(query)}&hl=en-US&gl=US&ceid=US:en"
+    resp = requests.get(url, headers=dict(HEADERS), timeout=timeout)
+    resp.raise_for_status()
+    return _parse_google_news_rss(resp.text, query)
+
+
+def _search_baidu(query: str, timeout: float = 5.0) -> list[dict]:
     url = f"https://www.baidu.com/s?wd={quote_plus(query)}&tn=news&rtt=1&bsst=1"
     headers = dict(HEADERS)
     headers.setdefault("Referer", "https://www.baidu.com/")
@@ -273,7 +379,7 @@ def _search_baidu(query: str, timeout: float = 6.0) -> list[dict]:
 
 
 def _cached_search(query: str, cache: dict, ttl_seconds: int, timeout: float) -> list[dict]:
-    key = md5_text(query)
+    key = md5_text("baidu:" + query)
     now_ts = time.time()
     queries = cache.setdefault("queries", {})
     cached = queries.get(key)
@@ -284,68 +390,146 @@ def _cached_search(query: str, cache: dict, ttl_seconds: int, timeout: float) ->
     return rows
 
 
-def collect_client_news(start_dt: datetime, end_dt: datetime, *, global_timeout: float = 75.0, per_query_timeout: float = 6.0, max_queries: int = 35) -> list[dict]:
-    deadline = time.monotonic() + global_timeout
+def _cached_google_search(query: str, cache: dict, ttl_seconds: int, timeout: float) -> list[dict]:
+    key = md5_text("google_news_rss:" + query)
+    now_ts = time.time()
+    queries = cache.setdefault("queries", {})
+    cached = queries.get(key)
+    if cached and now_ts - float(cached.get("ts", 0)) < ttl_seconds:
+        return cached.get("rows", [])
+    rows = _search_google_news_rss(query, timeout=timeout)
+    queries[key] = {"ts": now_ts, "query": query, "rows": rows[:10]}
+    return rows
+
+
+def _rejection_summary(reasons: dict) -> str:
+    return ";".join(f"{k}:{v}" for k, v in sorted((reasons or {}).items()))
+
+
+def _append_query_debug(debug_rows: Optional[list], *, client: dict, alias: str, query: str, source_adapter: str,
+                        status: str, rows: list, accepted: list, reasons: dict, elapsed: float):
+    if debug_rows is None:
+        return
+    debug_rows.append(_debug_row(
+        client=client.get("name", ""),
+        alias=alias,
+        query=query,
+        source_adapter=source_adapter,
+        status=status,
+        result_count=len(rows or []),
+        parsed_count=len(rows or []),
+        accepted_count=len(accepted or []),
+        title=(accepted[0].get("title", "") if accepted else (rows[0].get("title", "") if rows else "")),
+        url=(accepted[0].get("url", "") if accepted else (rows[0].get("url", "") if rows else "")),
+        published_at=(accepted[0].get("published_at", "") if accepted else ""),
+        rejection_reason=_rejection_summary(reasons),
+        elapsed_sec=elapsed,
+    ))
+
+
+def collect_client_news(start_dt: datetime, end_dt: datetime, *, global_timeout: float = 60.0, per_query_timeout: float = 5.0,
+                        max_queries: int = 20, max_items: int = 6, debug_rows: Optional[list] = None,
+                        run_dir: str = "") -> list[dict]:
+    started = time.monotonic()
+    deadline = started + global_timeout
     cache = _load_cache()
     found = []
     seen = set()
+    if debug_rows is None:
+        debug_rows = []
+    _log_client_news(f"CLIENT_NEWS_START run_dir={run_dir or ''}")
     try:
-        for client, query in iter_client_queries(max_queries=max_queries):
+        for client, alias, query in iter_client_queries(max_queries=max_queries):
             if time.monotonic() >= deadline:
+                _log_client_news(f"CLIENT_NEWS_TIMEOUT elapsed_sec={time.monotonic() - started:.3f}")
+                debug_rows.append(_debug_row(client=client.get("name", ""), alias=alias, query=query, status="timeout", elapsed_sec=time.monotonic() - started))
                 break
-            try:
-                rows = _cached_search(query, cache, ttl_seconds=6 * 3600, timeout=min(per_query_timeout, max(1.0, deadline - time.monotonic())))
-            except Exception:
-                continue
-            for item in parse_search_result_rows(rows, client, start_dt, end_dt, now=end_dt):
-                key = (item["client"], item["url"] or md5_text(item["title"]), item["title"])
-                if key in seen:
-                    continue
-                seen.add(key)
-                found.append(item)
-                if len(found) >= 8:
+            for adapter, search_fn in (("google_news_rss", _cached_google_search), ("baidu", _cached_search)):
+                if time.monotonic() >= deadline:
+                    _log_client_news(f"CLIENT_NEWS_TIMEOUT elapsed_sec={time.monotonic() - started:.3f}")
                     break
-            if len(found) >= 8:
+                q_started = time.monotonic()
+                rows = []
+                accepted = []
+                reasons = {}
+                try:
+                    timeout = min(per_query_timeout, max(1.0, deadline - time.monotonic()))
+                    rows = search_fn(query, cache, ttl_seconds=6 * 3600, timeout=timeout)
+                    accepted, reasons = parse_search_result_rows(rows, client, start_dt, end_dt, now=end_dt, return_reasons=True)
+                    status = "accepted" if accepted else "rejected"
+                except Exception as exc:
+                    reasons = {"error": 1}
+                    status = "error"
+                    debug_rows.append(_debug_row(
+                        client=client.get("name", ""), alias=alias, query=query, source_adapter=adapter,
+                        status="error", rejection_reason=str(exc)[:180], elapsed_sec=time.monotonic() - q_started,
+                    ))
+                    continue
+                _append_query_debug(
+                    debug_rows, client=client, alias=alias, query=query, source_adapter=adapter,
+                    status=status, rows=rows, accepted=accepted, reasons=reasons, elapsed=time.monotonic() - q_started,
+                )
+                for item in accepted:
+                    dedupe_key = (item["client"], md5_text(re.sub(r"\s+", " ", item["title"].lower())))
+                    url_key = item.get("url") or dedupe_key
+                    key = (item["client"], url_key)
+                    if key in seen or dedupe_key in seen:
+                        continue
+                    seen.add(key)
+                    seen.add(dedupe_key)
+                    found.append(item)
+                    if len(found) >= max_items:
+                        break
+                if len(found) >= max_items:
+                    break
+            if len(found) >= max_items:
                 break
+    except Exception as exc:
+        _log_client_news(f"CLIENT_NEWS_ERROR error={str(exc)[:200]}")
     finally:
         _save_cache(cache)
-    return found
+        _log_client_news(f"CLIENT_NEWS_DONE elapsed_sec={time.monotonic() - started:.3f} found={len(found)} debug_rows={len(debug_rows)}")
+    return found[:max_items]
+
+
+def _business_relevance_ru(text: str) -> str:
+    low = (text or "").lower()
+    if any(x in low for x in ("caster", "casting", "rolling mill", "pipe", "blast furnace", "投产", "产线", "连铸", "轧机", "高炉", "无缝管")):
+        return "это важно для оценки производственных мощностей и потенциального спроса на сырьё."
+    if any(x in low for x in ("sms group", "primetals", "order", "contract", "合同", "订单")):
+        return "это полезно как сигнал инвестиций и обновления производственной базы клиента."
+    if any(x in low for x in ("焦煤", "焦炭", "煤炭", "采购", "招标", "coal", "coke", "coking coal", "procurement")):
+        return "это важно как сигнал по закупкам угля/кокса и спросу со стороны клиента."
+    if any(x in low for x in ("停产", "减产", "环保", "安全", "事故", "maintenance", "shutdown", "environmental", "safety")):
+        return "это важно из-за возможного влияния на выпуск стали, потребление сырья и график закупок."
+    if any(x in low for x in ("利润", "亏损", "产量", "profit", "loss", "production")):
+        return "это важно как индикатор финансового состояния, выпуска и сырьевого спроса клиента."
+    if any(x in low for x in ("港口", "物流", "运输", "port", "logistics", "transport")):
+        return "это полезно как сигнал по логистике и поставкам."
+    return "это полезно как свежий деловой сигнал по клиенту."
 
 
 def format_client_news_ru(items: list[dict]) -> str:
-    lines = ["⬛ Новости по нашим клиентам"]
+    lines = ["⬛ Иные новости"]
     if not items:
-        lines.append("По клиентам из списка свежих релевантных новостей за период не найдено.")
+        lines.append("Свежих релевантных новостей по отслеживаемым компаниям за период не найдено.")
         return "\n\n".join([lines[0], lines[1]])
     for item in items[:6]:
         title = item.get("title", "")
         snippet = item.get("snippet", "")
         reason = _business_relevance_ru(f"{title} {snippet}")
-        lines.append(f"▪️ {item.get('client')} — {title}. {reason}\nСсылка: {item.get('url')}")
+        lines.append(f"▪️ {item.get('client')} — {title}; {reason}\nСсылка: {item.get('url')}")
     return "\n\n".join(lines)
 
 
 def format_client_news_zh(items: list[dict]) -> str:
-    lines = ["⬛ 客户新闻"]
+    lines = ["⬛ 其他新闻"]
     if not items:
-        lines.append("名单内客户在本期未发现新的相关新闻。")
+        lines.append("本期未发现跟踪公司相关的新消息。")
         return "\n\n".join([lines[0], lines[1]])
     for item in items[:6]:
         lines.append(f"▪️ {item.get('client')} — {item.get('title')}。\n链接：{item.get('url')}")
     return "\n\n".join(lines)
-
-
-def _business_relevance_ru(text: str) -> str:
-    low = (text or "").lower()
-    if any(x in low for x in ("焦煤", "焦炭", "煤炭", "采购", "招标")):
-        return "Для нас важно как сигнал по закупкам угля/кокса и спросу со стороны клиента."
-    if any(x in low for x in ("停产", "减产", "环保", "安全", "事故")):
-        return "Для нас важно из-за возможного влияния на выпуск стали, потребление сырья и график закупок."
-    if any(x in low for x in ("利润", "亏损", "产量", "高炉", "铁水")):
-        return "Для нас важно как индикатор финансового состояния, выпуска и сырьевого спроса клиента."
-    if any(x in low for x in ("港口", "物流", "运输")):
-        return "Для нас важно как возможный сигнал по логистике и поставкам."
-    return "Для нас важно как свежий деловой сигнал по клиенту."
 
 
 def append_client_news_sections(ru: str, zh: str, items: list[dict]) -> tuple[str, str]:
@@ -360,11 +544,15 @@ def main():
     parser = argparse.ArgumentParser(description="Collect fresh client news without sending Telegram.")
     parser.add_argument("--start", required=True, help="Report window start, format YYYY-MM-DD HH:MM")
     parser.add_argument("--end", required=True, help="Report window end, format YYYY-MM-DD HH:MM")
-    parser.add_argument("--timeout", type=float, default=75.0)
-    parser.add_argument("--max-queries", type=int, default=35)
+    parser.add_argument("--timeout", type=float, default=60.0)
+    parser.add_argument("--max-queries", type=int, default=20)
     args = parser.parse_args()
-    items = collect_client_news(_parse_cli_dt(args.start), _parse_cli_dt(args.end), global_timeout=args.timeout, max_queries=args.max_queries)
-    print(json.dumps(items, ensure_ascii=False, indent=2))
+    debug_rows = []
+    items = collect_client_news(
+        _parse_cli_dt(args.start), _parse_cli_dt(args.end),
+        global_timeout=args.timeout, max_queries=args.max_queries, debug_rows=debug_rows,
+    )
+    print(json.dumps({"items": items, "debug_rows": debug_rows}, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
