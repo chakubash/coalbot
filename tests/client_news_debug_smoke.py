@@ -66,6 +66,8 @@ def main():
     assert items == [], items
     assert debug_rows, debug_rows
     assert all("source_adapter" in row for row in debug_rows), debug_rows
+    assert all("resolved_url" in row and "original_google_url" in row for row in debug_rows), debug_rows
+    assert all("rejection_reason" in row for row in debug_rows), debug_rows
     assert "CLIENT_NEWS_START" in log_text and "CLIENT_NEWS_DONE" in log_text, log_text
     print("client news debug smoke passed")
 

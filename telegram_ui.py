@@ -45,16 +45,64 @@ AI_MODE_CHATS = load_ai_mode_chats()
 MANUAL_RECENT_SUMMARY_TEXT = "Сводка за последние 45 минут уже была сформирована, поэтому отправляю последнюю готовую версию."
 
 
+def _split_oversized_text(part: str, chunk_size: int):
+    chunks = []
+    current = ""
+    for token in part.split(" "):
+        if not current:
+            current = token
+            continue
+        candidate = f"{current} {token}"
+        if len(candidate) <= chunk_size:
+            current = candidate
+            continue
+        chunks.append(current)
+        current = token
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 def split_long_text(text: str, chunk_size: int = 3800):
     chunks = []
     current = ""
-    for line in text.split("\n"):
-        if len(current) + len(line) + 1 > chunk_size:
+    paragraphs = [p for p in (text or "").split("\n\n")]
+
+    def push(part: str):
+        nonlocal current
+        if not part:
+            return
+        candidate = f"{current}\n\n{part}" if current else part
+        if len(candidate) <= chunk_size:
+            current = candidate
+            return
+        if current:
+            chunks.append(current)
+            current = ""
+        if len(part) <= chunk_size:
+            current = part
+            return
+        lines = part.split("\n")
+        for line in lines:
+            line_candidate = f"{current}\n{line}" if current else line
+            if len(line_candidate) <= chunk_size:
+                current = line_candidate
+                continue
             if current:
                 chunks.append(current)
-            current = line
-        else:
-            current = f"{current}\n{line}" if current else line
+                current = ""
+            if len(line) <= chunk_size:
+                current = line
+            else:
+                # Last resort for pathological long non-URL text. URL lines should be
+                # shortened/omitted before this point by report formatting.
+                pieces = _split_oversized_text(line, chunk_size)
+                for piece in pieces[:-1]:
+                    chunks.append(piece)
+                current = pieces[-1] if pieces else ""
+
+    for paragraph in paragraphs:
+        push(paragraph)
     if current:
         chunks.append(current)
     return chunks
@@ -617,5 +665,4 @@ async def build_app():
 
 async def fallback_handler(update, context):
     return
-
 

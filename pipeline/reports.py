@@ -59,7 +59,7 @@ from storage import save_jsonl
 from pipeline.facts import analyze_article, extract_json_from_text
 from pipeline.scoring import score_event
 from pipeline.safety_terms import is_china_safety_event_text
-from sources.client_news import collect_client_news, append_client_news_sections
+from sources.client_news import collect_client_news, append_client_news_sections, clean_accepted_client_items
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 REPORT_BUILDER_DAILY_SOURCE_LLM = "REPORT_BUILDER=daily_source_llm"
@@ -628,7 +628,83 @@ def _period_hint_ru(start_dt, end_dt) -> str:
     )
 
 
+CLIENT_NEWS_REPORT_COMPANIES = (
+    "Baosteel", "Ansteel", "Valin", "Yongfeng", "Risun", "Ben Steel",
+    "Lingyuan Steel", "Liu Steel", "Yaxin", "Lubao", "SUMEC-Esteel", "CIEC",
+)
+
+
+class DailyReportValidationError(ValueError):
+    def __init__(self, errors: list[str], result: dict):
+        super().__init__("daily_source_llm_banned_text:" + ",".join(errors))
+        self.errors = errors
+        self.result = result
+
+
+def _client_news_for_prompt(client_items: list) -> list[dict]:
+    cleaned = clean_accepted_client_items(client_items or [], max_items=5)
+    out = []
+    for item in cleaned:
+        url = item.get("resolved_url") or item.get("publisher_url") or item.get("url", "")
+        if not _is_valid_report_url(url) or "news.google.com/rss/articles" in url:
+            continue
+        row = {
+            "client": item.get("client", ""),
+            "title": item.get("title", ""),
+            "snippet": item.get("snippet", ""),
+            "source": item.get("source", ""),
+            "published_at": item.get("published_at", ""),
+            "url": url,
+        }
+        out.append(row)
+    return out[:5]
+
+
+def _client_section_text(text: str, heading: str) -> str:
+    if heading not in (text or ""):
+        return ""
+    section = text.split(heading, 1)[1]
+    next_heading = re.search(r"\n⬛\s+", section)
+    if next_heading:
+        section = section[:next_heading.start()]
+    return section
+
+
+def _client_section_duplicate_errors(text: str, heading: str) -> list[str]:
+    section = _client_section_text(text, heading)
+    errors = []
+    if not section:
+        return errors
+    for company in CLIENT_NEWS_REPORT_COMPANIES:
+        count = 0
+        for line in section.splitlines():
+            if line.strip().lower().startswith(("ссылка:", "链接：", "链接:")):
+                continue
+            if re.search(rf"\b{re.escape(company)}\b", line, flags=re.I):
+                count += 1
+        if count > 1:
+            errors.append(f"duplicate_client:{company}")
+    return errors
+
+
+def _replace_client_news_with_empty(ru: str, zh: str) -> dict:
+    ru_replacement = "⬛ Иные новости\nСвежих релевантных новостей по отслеживаемым компаниям за период не найдено."
+    zh_replacement = "⬛ 其他新闻\n本期未发现跟踪公司相关的新消息。"
+    ru_text = ru or ""
+    zh_text = zh or ""
+    if "⬛ Иные новости" in ru_text:
+        ru_text = re.sub(r"⬛ Иные новости[\s\S]*?(?=\n⬛\s+|\Z)", ru_replacement, ru_text).rstrip()
+    else:
+        ru_text = ru_text.rstrip() + "\n\n" + ru_replacement
+    if "⬛ 其他新闻" in zh_text:
+        zh_text = re.sub(r"⬛ 其他新闻[\s\S]*?(?=\n⬛\s+|\Z)", zh_replacement, zh_text).rstrip()
+    else:
+        zh_text = zh_text.rstrip() + "\n\n" + zh_replacement
+    return {"ru": ru_text, "zh": zh_text}
+
+
 def _build_daily_source_prompt(start_dt, end_dt, source_groups: dict, client_items: list, kind=None) -> str:
+    client_items = _client_news_for_prompt(client_items)
     payload = {
         "report_date": end_dt.strftime("%Y-%m-%d"),
         "title_hint_ru": _daily_title_hint(kind, end_dt),
@@ -637,7 +713,7 @@ def _build_daily_source_prompt(start_dt, end_dt, source_groups: dict, client_ite
             label: [_source_row_payload(row) for row in rows]
             for label, rows in source_groups.items()
         },
-        "client_news": client_items or [],
+        "client_news": client_items,
     }
     return (
         "Ты редактор ежедневной сводки для российского участника торговли углем с Китаем. "
@@ -650,11 +726,13 @@ def _build_daily_source_prompt(start_dt, end_dt, source_groups: dict, client_ite
         "2–4 коротких абзаца живым деловым русским языком: что произошло, тон рынка, почему это важно для продаж/закупок угля, логистики и переговоров.\n\n"
         "⬛ Новости из источников\n"
         "Группируй только имеющиеся источники: ▪️ Mysteel, ▪️ SXCoal, ▪️ CLS. В каждом пункте русский переведенный заголовок/краткий факт, 1–2 предложения максимум и строка Ссылка: ... только для валидного http/https URL. "
+        "Если source_groups пустой, не оставляй пустой раздел: напиши одну строку «За период не было свежих значимых сообщений от Mysteel, SXCoal и CLS.»\n"
         "Если материал слабый, но релевантный, пиши живо и конкретно: «Тема ... остаётся в фокусе рынка» или «Материал важен как подтверждение продолжающегося внимания к ...».\n\n"
-        "⬛ Иные новости\n"
-        "Если client_news пустой, напиши ровно: Свежих релевантных новостей по отслеживаемым компаниям за период не найдено.\n\n"
-        "Запреты для русской версии: не вставляй китайские иероглифы; не вставляй javascript:void(0); не используй старые заголовки Картина утра, Что изменилось с прошлого дня, Ключевые события утра, Карта рынка, Что отслеживать, Что важно завтра; не пиши шаблонную счетную фразу о количестве свежих полезных сообщений; не используй ISO-формат в строке периода; не пиши канцелярит вроде «перспектива простоев», «новых раскрытых деталей нет», «материал не раскрывает», «в доступной части».\n"
-        "Китайская версия должна быть естественной китайской версией того же отчета и идти отдельно в поле zh.\n\n"
+        "⬛ Новости индустрии\n"
+        "Используй только client_news из JSON. Максимум 5 пунктов, максимум 1 пункт на компанию. Ссылка должна быть только publisher URL из поля url; никогда не вставляй news.google.com/rss/articles. Если client_news пустой, напиши ровно: Свежих релевантных новостей по отслеживаемым компаниям за период не найдено.\n\n"
+        "Запреты для русской версии: не вставляй китайские иероглифы; не вставляй javascript:void(0); не вставляй news.google.com/rss/articles; не используй старые заголовки Картина утра, Что изменилось с прошлого дня, Ключевые события утра, Карта рынка, Что отслеживать, Что важно завтра; не пиши шаблонную счетную фразу о количестве свежих полезных сообщений; не используй ISO-формат в строке периода; не пиши канцелярит вроде «перспектива простоев», «новых раскрытых деталей нет», «материал не раскрывает», «в доступной части».\n"
+        "Китайская версия должна быть естественной китайской версией того же отчета и идти отдельно в поле zh. "
+        "Заголовок zh должен быть только на китайском: ⬛ 中国煤炭市场早间简报 / ⬛ 中国煤炭市场晚间简报 / ⬛ 中国煤炭市场即时简报.\n\n"
         "СТРУКТУРИРОВАННЫЕ ДАННЫЕ:\n"
         + json.dumps(payload, ensure_ascii=False, indent=2)
     )
@@ -688,6 +766,8 @@ def _daily_report_validation_errors(ru: str) -> list[str]:
         errors.append("raw_chinese_in_ru")
     if "javascript:void(0)" in text.lower():
         errors.append("invalid_javascript_url")
+    if "news.google.com/rss/articles" in text.lower():
+        errors.append("google_news_url_in_ru")
     first_line = text.strip().splitlines()[0] if text.strip().splitlines() else ""
     if "сводка по рынку угля кнр" in first_line.lower() and " за " not in first_line.lower():
         errors.append("title_without_date")
@@ -698,6 +778,24 @@ def _daily_report_validation_errors(ru: str) -> list[str]:
     for section in ("Картина дня", "Новости из источников", "Иные новости"):
         if section not in text:
             errors.append(f"missing:{section}")
+    source_section = _client_section_text(text, "⬛ Новости из источников")
+    if "⬛ Новости из источников" in text and not source_section.strip():
+        errors.append("source_section_empty")
+    if "⬛ Иные новости —" in text:
+        errors.append("client_section_heading_not_separate")
+    errors.extend(_client_section_duplicate_errors(text, "⬛ Иные новости"))
+    return errors
+
+
+def _zh_report_validation_errors(zh: str) -> list[str]:
+    text = zh or ""
+    errors = []
+    first_line = text.strip().splitlines()[0] if text.strip().splitlines() else ""
+    if re.search(r"[А-Яа-яЁё]", first_line):
+        errors.append("cyrillic_in_zh_title")
+    if "news.google.com/rss/articles" in text.lower():
+        errors.append("google_news_url_in_zh")
+    errors.extend(_client_section_duplicate_errors(text, "⬛ 其他新闻"))
     return errors
 
 
@@ -709,8 +807,9 @@ def _call_daily_source_llm(prompt: str) -> dict:
     ru = _sanitize_report_text(str(parsed["ru"]).strip())
     zh = _sanitize_report_text(str(parsed["zh"]).strip())
     errors = _daily_report_validation_errors(ru)
+    errors += _zh_report_validation_errors(zh)
     if errors:
-        raise ValueError("daily_source_llm_banned_text:" + ",".join(errors))
+        raise DailyReportValidationError(errors, {"ru": ru, "zh": zh})
     return {"ru": ru, "zh": zh}
 
 
@@ -724,9 +823,19 @@ def _build_source_news_report_llm(start_dt, end_dt, analyzed: list, client_items
             prompt
             + "\n\nПРЕДЫДУЩИЙ ОТВЕТ НЕ ПРОШЕЛ ВАЛИДАЦИЮ: "
             + str(first_error)
-            + "\nПерепиши заново. Русский раздел: без китайских иероглифов, без javascript:void(0), без старых заголовков, без ISO-периода, без счетной шаблонной фразы и без канцелярита про раскрытые детали или доступную часть материала."
+            + "\nПерепиши заново. Русский раздел: без китайских иероглифов, без javascript:void(0), без старых заголовков, без ISO-периода, без счетной шаблонной фразы и без канцелярита про раскрытые детали или доступную часть материала. Китайский заголовок — только китайскими иероглифами, без кириллицы."
         )
-        return _call_daily_source_llm(corrective_prompt)
+        try:
+            return _call_daily_source_llm(corrective_prompt)
+        except DailyReportValidationError as second_error:
+            client_errors = [e for e in second_error.errors if e.startswith("duplicate_client:") or "google_news_url" in e]
+            if client_errors:
+                cleaned = _replace_client_news_with_empty(second_error.result.get("ru", ""), second_error.result.get("zh", ""))
+                errors = _daily_report_validation_errors(cleaned["ru"]) + _zh_report_validation_errors(cleaned["zh"])
+                errors = [e for e in errors if not (e.startswith("duplicate_client:") or "google_news_url" in e)]
+                if not errors:
+                    return cleaned
+            raise
 
 
 def _build_source_news_report(ru_title: str, zh_title: str, start_dt, end_dt, analyzed: list, client_items: list) -> dict:
@@ -839,6 +948,7 @@ def build_bilingual_summary_for_range(articles, previous_summary_ru, start_dt, e
         debug_rows = []
         try:
             items = collect_client_news(start_dt, end_dt, debug_rows=debug_rows, run_dir=str(run_dir))
+            items = _client_news_for_prompt(items)
             save_jsonl(os.path.join(run_dir, "client_news.jsonl"), items)
             save_jsonl(os.path.join(run_dir, "client_news_debug.jsonl"), debug_rows)
             return items

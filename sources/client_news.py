@@ -81,6 +81,7 @@ STALE_TERMS = (
 PHOTO_TERMS = ("reuters pictures", "reuters photo", "photo", "图片", "图集", "getty images")
 STOCK_ONLY_TERMS = ("stock", "share price", "shares", "rating", "price target", "dividend", "股票", "股价", "评级", "目标价")
 STOCK_OPERATIONAL_TERMS = ("production", "capacity", "plant", "mill", "blast furnace", "caster", "steel", "profit", "loss", "产量", "高炉", "投产", "钢铁")
+MAX_REPORT_URL_LEN = 220
 
 
 @dataclass
@@ -142,7 +143,8 @@ def _log_client_news(message: str):
 
 
 def _debug_row(client="", alias="", query="", source_adapter="", status="", result_count=0, parsed_count=0,
-               accepted_count=0, title="", url="", published_at="", rejection_reason="", elapsed_sec=0.0) -> dict:
+               accepted_count=0, title="", url="", published_at="", rejection_reason="", elapsed_sec=0.0,
+               original_google_url="", resolved_url="") -> dict:
     return {
         "client": client,
         "alias": alias,
@@ -154,6 +156,8 @@ def _debug_row(client="", alias="", query="", source_adapter="", status="", resu
         "accepted_count": int(accepted_count or 0),
         "title": title,
         "url": url,
+        "original_google_url": original_google_url,
+        "resolved_url": resolved_url,
         "published_at": published_at,
         "rejection_reason": rejection_reason,
         "elapsed_sec": round(float(elapsed_sec or 0.0), 3),
@@ -190,16 +194,25 @@ def iter_client_queries(max_queries: int = 20) -> Iterable[tuple[dict, str, str]
     made = 0
     priority = {name: i for i, name in enumerate(PRIORITY_CLIENT_NAMES)}
     clients = sorted(CLIENT_WATCHLIST, key=lambda c: priority.get(c["name"], 999))
+    prepared = []
     for client in clients:
         aliases = _client_aliases(client)[:3]
-        for alias in aliases:
+        prepared.append((client, aliases))
+    max_rounds = max(
+        len(ZH_QUERY_TERMS if any(re.search(r"[\u4e00-\u9fff]", a) for a in aliases) else EN_QUERY_TERMS)
+        for _, aliases in prepared
+    )
+    for round_idx in range(max_rounds):
+        for client, aliases in prepared:
+            alias = aliases[round_idx % len(aliases)]
             terms = ZH_QUERY_TERMS if re.search(r"[\u4e00-\u9fff]", alias) else EN_QUERY_TERMS
-            for term in terms:
-                if made >= max_queries:
-                    return
-                query = f"{alias} {term}".strip()
-                made += 1
-                yield client, alias, query
+            if round_idx >= len(terms):
+                continue
+            if made >= max_queries:
+                return
+            query = f"{alias} {terms[round_idx]}".strip()
+            made += 1
+            yield client, alias, query
 
 
 def _parse_baidu_time(text: str, now: datetime) -> Optional[datetime]:
@@ -218,6 +231,9 @@ def _parse_baidu_time(text: str, now: datetime) -> Optional[datetime]:
         return now.replace(hour=12, minute=0, second=0, microsecond=0)
     if "yesterday" in text.lower() or "昨天" in text or "昨日" in text:
         return (now - timedelta(days=1)).replace(hour=12, minute=0, second=0, microsecond=0)
+    m = re.search(r"(\d+)\s*days?\s*ago", text, flags=re.I)
+    if m:
+        return now - timedelta(days=int(m.group(1)))
     m = re.search(r"(20\d{2})[-/年](\d{1,2})[-/月](\d{1,2})", text)
     if m:
         y, mo, d = map(int, m.groups())
@@ -246,39 +262,89 @@ def _unwrap_baidu_url(url: str) -> str:
     return url
 
 
-def _row_rejection_reason(row: dict, client: dict, start_dt: datetime, end_dt: datetime, now: datetime) -> tuple[str, str]:
+def _is_google_news_url(url: str) -> bool:
+    parsed = urlparse(str(url or ""))
+    return parsed.netloc.endswith("news.google.com")
+
+
+def _resolve_google_news_url(url: str, timeout: float = 3.0) -> str:
+    if not _is_google_news_url(url):
+        return url
+    try:
+        resp = requests.get(url, headers=dict(HEADERS), timeout=timeout, allow_redirects=True)
+        final_url = resp.url or ""
+        if final_url and not _is_google_news_url(final_url):
+            return final_url
+    except Exception:
+        pass
+    return url
+
+
+def safe_report_url(url: str) -> str:
+    url = clean_text(url)
+    if not url:
+        return ""
+    if _is_google_news_url(url):
+        url = _resolve_google_news_url(url)
+        if _is_google_news_url(url) and len(url) > 80:
+            return ""
+    if len(url) > MAX_REPORT_URL_LEN:
+        return ""
+    return url
+
+
+def _resolved_url_for_row(url: str) -> tuple[str, str]:
+    original_google_url = url if _is_google_news_url(url) else ""
+    resolved_url = _resolve_google_news_url(url) if original_google_url else url
+    if original_google_url and _is_google_news_url(resolved_url):
+        return original_google_url, ""
+    if len(resolved_url or "") > MAX_REPORT_URL_LEN:
+        return original_google_url, ""
+    return original_google_url, resolved_url
+
+
+def _row_rejection_reason(row: dict, client: dict, start_dt: datetime, end_dt: datetime, now: datetime) -> tuple[str, str, str]:
     title = clean_text(row.get("title", ""))
     snippet = clean_text(row.get("snippet", ""))
     url = clean_text(row.get("url", ""))
     source = clean_text(row.get("source", ""))
     blob = f"{title} {snippet} {source} {url}".lower()
     if not title or not url:
-        return "missing_title_or_url", ""
+        return "missing_title_or_url", "", ""
+    original_google_url, resolved_url = _resolved_url_for_row(url)
+    if original_google_url and not resolved_url:
+        return "google_url_unresolved", "", original_google_url
+    if not resolved_url:
+        return "url_too_long", "", ""
     aliases = [a.lower() for a in _client_aliases(client)]
     if not any(alias and alias.lower() in blob for alias in aliases):
-        return "client_alias_not_found", ""
+        return "client_alias_not_found", "", resolved_url
     if any(term.lower() in blob for term in PHOTO_TERMS) and "reuters" in blob:
-        return "reuters_photo_page", ""
+        return "reuters_photo_page", "", resolved_url
     if any(term.lower() in blob for term in STALE_TERMS):
-        return "stale_profile_or_report", ""
+        return "stale_profile_or_report", "", resolved_url
     if any(term.lower() in blob for term in STOCK_ONLY_TERMS) and not any(term.lower() in blob for term in STOCK_OPERATIONAL_TERMS):
-        return "stock_only_without_operations", ""
+        return "stock_only_without_operations", "", resolved_url
+    if any(x in blob for x in ("no direct immediate effect", "no immediate effect", "does not affect current demand", "не несёт прямого", "не влияет на текущий спрос", "скорее фоновый сигнал")):
+        return "weak_business_relevance", "", resolved_url
     if not any(term.lower() in blob for term in BUSINESS_RELEVANCE_TERMS):
-        return "no_business_relevance", ""
+        return "weak_business_relevance", "", resolved_url
 
     dt = row.get("published_dt") or _parse_baidu_time(" ".join([row.get("date", ""), snippet, source]), now)
     if dt:
         dt = _to_client_news_dt(dt)
         if not dt:
-            return "unparseable_date", ""
-        if dt < (end_dt - timedelta(hours=72)) or dt > (end_dt + timedelta(hours=2)):
-            return "outside_72h_freshness", ""
-        return "", dt.strftime("%Y-%m-%d %H:%M")
+            return "no_clear_publish_date", "", resolved_url
+        inside_window = start_dt <= dt <= end_dt
+        same_report_day = dt.date() == end_dt.date()
+        if (not inside_window and not same_report_day) or dt > (end_dt + timedelta(hours=2)):
+            return "stale_date", "", resolved_url
+        return "", dt.strftime("%Y-%m-%d %H:%M"), resolved_url
 
     freshness_text = f"{title} {snippet} {row.get('date', '')}".lower()
-    if not any(x in freshness_text for x in ("today", "yesterday", "今天", "昨日", "昨天", "小时前", "分钟前")):
-        return "missing_fresh_date", ""
-    return "", ""
+    if not any(x in freshness_text for x in ("today", "今天", "小时前", "分钟前")):
+        return "no_clear_publish_date", "", resolved_url
+    return "", "", resolved_url
 
 
 def parse_search_result_rows(rows: list[dict], client: dict, start_dt: datetime, end_dt: datetime,
@@ -289,7 +355,7 @@ def parse_search_result_rows(rows: list[dict], client: dict, start_dt: datetime,
     out = []
     reasons = {}
     for row in rows:
-        reason, published_at = _row_rejection_reason(row, client, start_dt, end_dt, now)
+        reason, published_at, resolved_url = _row_rejection_reason(row, client, start_dt, end_dt, now)
         if reason:
             reasons[reason] = reasons.get(reason, 0) + 1
             continue
@@ -299,7 +365,7 @@ def parse_search_result_rows(rows: list[dict], client: dict, start_dt: datetime,
         out.append(ClientNewsItem(
             client=client["name"],
             title=title[:140],
-            url=url,
+            url=resolved_url or url,
             snippet=snippet[:220],
             source=clean_text(row.get("source", "")),
             published_at=published_at,
@@ -308,6 +374,39 @@ def parse_search_result_rows(rows: list[dict], client: dict, start_dt: datetime,
     if return_reasons:
         return out, reasons
     return out
+
+
+def clean_accepted_client_items(items: list[dict], max_items: int = 5) -> list[dict]:
+    """Final safety filter for items that may be written or sent to the report LLM."""
+    cleaned = []
+    seen_clients = set()
+    seen_stories = set()
+    for item in items or []:
+        client_name = clean_text(item.get("client", ""))
+        if not client_name or client_name in seen_clients:
+            continue
+        url = clean_text(item.get("resolved_url") or item.get("publisher_url") or item.get("url", ""))
+        if _is_google_news_url(url):
+            resolved = _resolve_google_news_url(url)
+            if _is_google_news_url(resolved):
+                continue
+            url = resolved
+        if not url or _is_google_news_url(url) or len(url) > MAX_REPORT_URL_LEN:
+            continue
+        story_key = md5_text(re.sub(r"\s+", " ", clean_text(item.get("title", "")).lower()))
+        if story_key in seen_stories:
+            continue
+        cleaned_item = dict(item)
+        cleaned_item["client"] = client_name
+        cleaned_item["url"] = url
+        cleaned_item["resolved_url"] = url
+        cleaned_item.pop("original_google_url", None)
+        seen_clients.add(client_name)
+        seen_stories.add(story_key)
+        cleaned.append(cleaned_item)
+        if len(cleaned) >= max_items:
+            break
+    return cleaned
 
 
 def _parse_baidu_html(html: str, query: str) -> list[dict]:
@@ -410,6 +509,9 @@ def _append_query_debug(debug_rows: Optional[list], *, client: dict, alias: str,
                         status: str, rows: list, accepted: list, reasons: dict, elapsed: float):
     if debug_rows is None:
         return
+    shown_url = accepted[0].get("url", "") if accepted else (rows[0].get("url", "") if rows else "")
+    original_google_url = shown_url if _is_google_news_url(shown_url) else ""
+    resolved_url = accepted[0].get("url", "") if accepted else ""
     debug_rows.append(_debug_row(
         client=client.get("name", ""),
         alias=alias,
@@ -420,7 +522,9 @@ def _append_query_debug(debug_rows: Optional[list], *, client: dict, alias: str,
         parsed_count=len(rows or []),
         accepted_count=len(accepted or []),
         title=(accepted[0].get("title", "") if accepted else (rows[0].get("title", "") if rows else "")),
-        url=(accepted[0].get("url", "") if accepted else (rows[0].get("url", "") if rows else "")),
+        url=shown_url,
+        original_google_url=original_google_url,
+        resolved_url=resolved_url,
         published_at=(accepted[0].get("published_at", "") if accepted else ""),
         rejection_reason=_rejection_summary(reasons),
         elapsed_sec=elapsed,
@@ -428,13 +532,14 @@ def _append_query_debug(debug_rows: Optional[list], *, client: dict, alias: str,
 
 
 def collect_client_news(start_dt: datetime, end_dt: datetime, *, global_timeout: float = 60.0, per_query_timeout: float = 5.0,
-                        max_queries: int = 20, max_items: int = 6, debug_rows: Optional[list] = None,
+                        max_queries: int = 20, max_items: int = 5, debug_rows: Optional[list] = None,
                         run_dir: str = "") -> list[dict]:
     started = time.monotonic()
     deadline = started + global_timeout
     cache = _load_cache()
     found = []
     seen = set()
+    seen_clients = set()
     if debug_rows is None:
         debug_rows = []
     _log_client_news(f"CLIENT_NEWS_START run_dir={run_dir or ''}")
@@ -474,11 +579,31 @@ def collect_client_news(start_dt: datetime, end_dt: datetime, *, global_timeout:
                     url_key = item.get("url") or dedupe_key
                     key = (item["client"], url_key)
                     if key in seen or dedupe_key in seen:
+                        debug_rows.append(_debug_row(
+                            client=item.get("client", ""), alias=alias, query=query, source_adapter=adapter,
+                            status="rejected", title=item.get("title", ""), url=item.get("url", ""),
+                            resolved_url=item.get("url", ""), rejection_reason="duplicate_story",
+                            elapsed_sec=time.monotonic() - q_started,
+                        ))
+                        continue
+                    if item["client"] in seen_clients:
+                        debug_rows.append(_debug_row(
+                            client=item.get("client", ""), alias=alias, query=query, source_adapter=adapter,
+                            status="rejected", title=item.get("title", ""), url=item.get("url", ""),
+                            resolved_url=item.get("url", ""), rejection_reason="duplicate_client",
+                            elapsed_sec=time.monotonic() - q_started,
+                        ))
                         continue
                     seen.add(key)
                     seen.add(dedupe_key)
+                    seen_clients.add(item["client"])
                     found.append(item)
                     if len(found) >= max_items:
+                        debug_rows.append(_debug_row(
+                            client=item.get("client", ""), alias=alias, query=query, source_adapter=adapter,
+                            status="skipped", rejection_reason="over_total_limit",
+                            elapsed_sec=time.monotonic() - q_started,
+                        ))
                         break
                 if len(found) >= max_items:
                     break
@@ -489,7 +614,7 @@ def collect_client_news(start_dt: datetime, end_dt: datetime, *, global_timeout:
     finally:
         _save_cache(cache)
         _log_client_news(f"CLIENT_NEWS_DONE elapsed_sec={time.monotonic() - started:.3f} found={len(found)} debug_rows={len(debug_rows)}")
-    return found[:max_items]
+    return clean_accepted_client_items(found, max_items=max_items)
 
 
 def _business_relevance_ru(text: str) -> str:
@@ -518,7 +643,11 @@ def format_client_news_ru(items: list[dict]) -> str:
         title = item.get("title", "")
         snippet = item.get("snippet", "")
         reason = _business_relevance_ru(f"{title} {snippet}")
-        lines.append(f"▪️ {item.get('client')} — {title}; {reason}\nСсылка: {item.get('url')}")
+        block = f"— {item.get('client')} — {title}; {reason}"
+        url = safe_report_url(item.get("url", ""))
+        if url:
+            block += f"\nСсылка: {url}"
+        lines.append(block)
     return "\n\n".join(lines)
 
 
@@ -528,7 +657,11 @@ def format_client_news_zh(items: list[dict]) -> str:
         lines.append("本期未发现跟踪公司相关的新消息。")
         return "\n\n".join([lines[0], lines[1]])
     for item in items[:6]:
-        lines.append(f"▪️ {item.get('client')} — {item.get('title')}。\n链接：{item.get('url')}")
+        block = f"— {item.get('client')} — {item.get('title')}。"
+        url = safe_report_url(item.get("url", ""))
+        if url:
+            block += f"\n链接：{url}"
+        lines.append(block)
     return "\n\n".join(lines)
 
 
