@@ -1,17 +1,6 @@
-
-# High-priority China coal safety / accident terms.
-# These must pass headline gating even without price words.
-ACCIDENT_FORCE_KEEP_TERMS = [
-    "事故", "矿难", "坍塌", "塌方", "冒顶", "透水", "瓦斯", "爆炸",
-    "遇难", "死亡", "受伤", "被困", "救援",
-    "非法煤矿", "非法开采", "安全生产", "安全检查", "安全监管",
-    "停产整顿", "责令停产", "瞒报", "谎报",
-    "accident", "mine accident", "collapse", "gas explosion",
-    "illegal mine", "illegal mining", "fatal", "killed", "dead",
-    "safety inspection", "safety crackdown"
-]
-
 from collections import defaultdict
+
+from pipeline.safety_terms import is_china_safety_event_text
 
 BLOCK_KEYWORDS = [
     "petcoke", "petroleum coke", "needle coke", "calcined petcoke",
@@ -78,8 +67,12 @@ def _score_candidate(c):
         elif kw in url:
             score += 1
 
+    blob = f"{title} {url} {ctx}"
+
+    if is_china_safety_event_text(blob):
+        return 10000
+
     # Явный мусор режем
-    blob = f"{title} {url}"
     for kw in BLOCK_KEYWORDS:
         if kw in blob:
             return -999
