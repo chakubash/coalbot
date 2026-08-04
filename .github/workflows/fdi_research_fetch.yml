@@ -1,0 +1,284 @@
+name: Temporary FDI Research Data Fetch
+
+on:
+  push:
+    branches:
+      - research-fdi-temp
+
+permissions:
+  contents: write
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  fetch-data:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Check out temporary branch
+        uses: actions/checkout@v4
+        with:
+          ref: research-fdi-temp
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install data dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas pyarrow requests openpyxl xlrd
+
+      - name: Fetch IMF CDIS/DIP and auxiliary macro data
+        shell: bash
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+          import gzip
+          import json
+          import os
+          import sys
+          import time
+          from pathlib import Path
+          from typing import Any
+
+          import pandas as pd
+          import requests
+          from requests.adapters import HTTPAdapter
+          from urllib3.util.retry import Retry
+
+          OUT = Path("artifact")
+          OUT.mkdir(exist_ok=True)
+
+          session = requests.Session()
+          retry = Retry(
+              total=8,
+              connect=8,
+              read=8,
+              backoff_factor=1.0,
+              status_forcelist=(429, 500, 502, 503, 504),
+              allowed_methods=frozenset(["GET", "HEAD"]),
+          )
+          session.mount("https://", HTTPAdapter(max_retries=retry))
+          session.headers.update({"User-Agent": "Hong-Kong-FDI-research/1.0"})
+
+          report: dict[str, Any] = {"downloads": {}, "errors": []}
+
+          def get_json(url: str, params: dict[str, Any] | None = None, timeout: int = 180) -> dict[str, Any]:
+              r = session.get(url, params=params, timeout=timeout)
+              r.raise_for_status()
+              return r.json()
+
+          # Dataset codelists and metadata.
+          meta_url = "https://api.db.nomics.world/v22/datasets/IMF/CDIS"
+          meta = get_json(meta_url)
+          (OUT / "dbnomics_cdis_metadata.json").write_text(
+              json.dumps(meta, ensure_ascii=False), encoding="utf-8"
+          )
+          docs = meta.get("datasets", {}).get("docs", [])
+          if not docs:
+              raise RuntimeError("DBnomics CDIS metadata returned no dataset document")
+          dset = docs[0]
+          codelists = dset.get("dimensions_values_labels", {})
+          (OUT / "codelists.json").write_text(
+              json.dumps(codelists, ensure_ascii=False, indent=2), encoding="utf-8"
+          )
+
+          def fetch_indicator(indicator: str, stem: str) -> pd.DataFrame:
+              url = "https://api.db.nomics.world/v22/series/IMF/CDIS"
+              rows: list[dict[str, Any]] = []
+              offset = 0
+              limit = 1000
+              first_doc: dict[str, Any] | None = None
+              while True:
+                  params = {
+                      "dimensions": json.dumps({"FREQ": ["A"], "INDICATOR": [indicator]}),
+                      "observations": "1",
+                      "limit": limit,
+                      "offset": offset,
+                      "facets": "0",
+                  }
+                  j = get_json(url, params=params)
+                  block = j.get("series", {})
+                  found = int(block.get("num_found", 0))
+                  batch = block.get("docs", [])
+                  if first_doc is None and batch:
+                      first_doc = batch[0]
+                      (OUT / f"{stem}_first_doc.json").write_text(
+                          json.dumps(first_doc, ensure_ascii=False, indent=2), encoding="utf-8"
+                      )
+                  for s in batch:
+                      dim = s.get("dimensions", {}) or {}
+                      ref = dim.get("REF_AREA")
+                      cp = dim.get("COUNTERPART_AREA")
+                      periods = s.get("period", []) or []
+                      values = s.get("value", []) or []
+                      statuses = s.get("observations_attributes", []) or []
+                      series_code = s.get("series_code") or s.get("code")
+                      series_name = s.get("series_name") or s.get("name")
+                      for idx, (period, value) in enumerate(zip(periods, values)):
+                          obs_status = None
+                          if idx < len(statuses):
+                              status_item = statuses[idx]
+                              if isinstance(status_item, dict):
+                                  obs_status = status_item.get("OBS_STATUS") or status_item.get("status")
+                              elif isinstance(status_item, list):
+                                  obs_status = json.dumps(status_item, ensure_ascii=False)
+                          rows.append({
+                              "ref_area": ref,
+                              "counterpart_area": cp,
+                              "indicator": indicator,
+                              "year": int(period) if str(period).isdigit() else period,
+                              "value_usd_mn": value,
+                              "obs_status": obs_status,
+                              "series_code": series_code,
+                              "series_name": series_name,
+                          })
+                  offset += len(batch)
+                  print(f"{indicator}: {offset}/{found} series; {len(rows)} observations", flush=True)
+                  if not batch or offset >= found:
+                      break
+                  time.sleep(0.05)
+              df = pd.DataFrame(rows)
+              if not df.empty:
+                  df["value_usd_mn"] = pd.to_numeric(df["value_usd_mn"], errors="coerce")
+                  df["year"] = pd.to_numeric(df["year"], errors="coerce").astype("Int64")
+              df.to_parquet(OUT / f"{stem}.parquet", index=False, compression="zstd")
+              df.to_csv(OUT / f"{stem}.csv.gz", index=False, compression="gzip")
+              report["downloads"][stem] = {
+                  "indicator": indicator,
+                  "rows": int(len(df)),
+                  "series": int(df["series_code"].nunique()) if len(df) else 0,
+                  "years": [int(df["year"].min()), int(df["year"].max())] if len(df) else None,
+                  "reporters": int(df["ref_area"].nunique()) if len(df) else 0,
+                  "counterparts": int(df["counterpart_area"].nunique()) if len(df) else 0,
+                  "negative_rows": int((df["value_usd_mn"] < 0).sum()) if len(df) else 0,
+                  "zero_rows": int((df["value_usd_mn"] == 0).sum()) if len(df) else 0,
+                  "missing_values": int(df["value_usd_mn"].isna().sum()) if len(df) else 0,
+              }
+              return df
+
+          inward = fetch_indicator("IIW_BP6_USD", "bilateral_fdi_inward_dbnomics_2009_2023")
+          outward = fetch_indicator("IOW_BP6_USD", "bilateral_fdi_outward_dbnomics_2009_2023")
+
+          # Current IMF SDMX 3.0 metadata and a Hong Kong sample for 2023-2024.
+          current_requests = {
+              "imf_dip_structure": (
+                  "https://api.imf.org/external/sdmx/3.0/structure/dataflow/IMF.STA/DIP/12.0.1",
+                  {"detail": "full", "references": "descendants"},
+                  "application/vnd.sdmx.structure+json;version=2.0.0",
+              ),
+              "imf_dip_indicator_availability": (
+                  "https://api.imf.org/external/sdmx/3.0/availability/dataflow/IMF.STA/DIP/12.0.1/*/INDICATOR",
+                  {"mode": "available", "references": "all"},
+                  "application/vnd.sdmx.structure+json;version=2.0.0",
+              ),
+              "imf_dip_hkg_sample": (
+                  "https://api.imf.org/external/sdmx/3.0/data/dataflow/IMF.STA/DIP/12.0.1/*",
+                  {
+                      "c[COUNTRY]": "HKG",
+                      "c[TIME_PERIOD]": "ge:2023+le:2024",
+                      "attributes": "dsd",
+                      "measures": "all",
+                  },
+                  "text/csv;version=2.0.0",
+              ),
+          }
+          for name, (url, params, accept) in current_requests.items():
+              try:
+                  r = session.get(url, params=params, headers={"Accept": accept}, timeout=300)
+                  report["downloads"][name] = {
+                      "status": r.status_code,
+                      "url": r.url,
+                      "content_type": r.headers.get("content-type"),
+                      "bytes": len(r.content),
+                  }
+                  r.raise_for_status()
+                  suffix = ".csv" if "csv" in (r.headers.get("content-type") or accept) else ".json"
+                  (OUT / f"{name}{suffix}").write_bytes(r.content)
+              except Exception as exc:
+                  report["errors"].append({"stage": name, "error": repr(exc)})
+
+          # World Bank GDP and population, 2009-2024.
+          def fetch_wdi(indicator: str, stem: str) -> None:
+              url = f"https://api.worldbank.org/v2/country/all/indicator/{indicator}"
+              params = {"format": "json", "per_page": 30000, "date": "2009:2024"}
+              r = session.get(url, params=params, timeout=300)
+              r.raise_for_status()
+              data = r.json()
+              records = data[1] if isinstance(data, list) and len(data) > 1 else []
+              rows = []
+              for x in records:
+                  rows.append({
+                      "iso3": x.get("countryiso3code"),
+                      "country": (x.get("country") or {}).get("value"),
+                      "year": int(x["date"]) if str(x.get("date", "")).isdigit() else x.get("date"),
+                      "value": x.get("value"),
+                      "indicator": indicator,
+                  })
+              df = pd.DataFrame(rows)
+              df.to_parquet(OUT / f"{stem}.parquet", index=False, compression="zstd")
+              df.to_csv(OUT / f"{stem}.csv.gz", index=False, compression="gzip")
+              report["downloads"][stem] = {"rows": len(df), "indicator": indicator}
+
+          fetch_wdi("NY.GDP.MKTP.CD", "wdi_gdp_current_usd_2009_2024")
+          fetch_wdi("SP.POP.TOTL", "wdi_population_2009_2024")
+
+          # Attempt to record the BLOCS bulk-download headers without making the
+          # final analysis depend on this secondary compilation.
+          try:
+              blocs_url = "https://aletheia-research.org/?download_id=1832&sdm_process_download=1"
+              r = session.get(blocs_url, stream=True, timeout=300, allow_redirects=True)
+              report["downloads"]["blocs_probe"] = {
+                  "status": r.status_code,
+                  "final_url": r.url,
+                  "content_type": r.headers.get("content-type"),
+                  "content_length": r.headers.get("content-length"),
+                  "content_disposition": r.headers.get("content-disposition"),
+              }
+              r.close()
+          except Exception as exc:
+              report["errors"].append({"stage": "blocs_probe", "error": repr(exc)})
+
+          report["environment"] = {
+              "run_id": os.environ.get("GITHUB_RUN_ID"),
+              "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+              "sha": os.environ.get("GITHUB_SHA"),
+              "python": sys.version,
+          }
+          (OUT / "fetch_report.json").write_text(
+              json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+          )
+          Path("run_info.json").write_text(
+              json.dumps({
+                  "run_id": int(os.environ["GITHUB_RUN_ID"]),
+                  "run_attempt": int(os.environ.get("GITHUB_RUN_ATTEMPT", "1")),
+                  "sha": os.environ.get("GITHUB_SHA"),
+                  "artifact_name": "hong-kong-fdi-source-data",
+              }, indent=2), encoding="utf-8"
+          )
+          Path("fetch_report.json").write_text(
+              json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+          )
+          print(json.dumps(report, indent=2), flush=True)
+          PY
+
+      - name: Upload source-data artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hong-kong-fdi-source-data
+          path: artifact/
+          compression-level: 6
+          retention-days: 7
+
+      - name: Publish run identifier on temporary branch
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add run_info.json fetch_report.json
+          git commit -m "Record temporary FDI data artifact run" || true
+          git push origin HEAD:research-fdi-temp
