@@ -1,0 +1,42 @@
+name: HK research S&P market data
+
+on:
+  push:
+    branches:
+      - research-hk-monetary-transmission
+    paths:
+      - ".github/workflows/hk-sp500-market.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch-sp500:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install pandas yfinance
+      - name: Fetch market history
+        run: |
+          python - <<'PY'
+          import pandas as pd
+          import yfinance as yf
+          from pathlib import Path
+          out=Path('market_extra'); out.mkdir(exist_ok=True)
+          for ticker, name in [('^GSPC','sp500'),('CNY=X','cny_yahoo')]:
+              df=yf.download(ticker,start='2004-12-01',end='2026-08-06',auto_adjust=False,progress=False,threads=False,timeout=30)
+              if isinstance(df.columns,pd.MultiIndex):
+                  df.columns=['__'.join(str(x) for x in c if str(x)) for c in df.columns]
+              df.reset_index().to_csv(out/f'{name}.csv',index=False)
+              print(ticker,df.shape)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hk-sp500-market-data
+          path: market_extra
+          if-no-files-found: error
+          retention-days: 7
