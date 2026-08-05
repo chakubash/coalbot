@@ -1,0 +1,26 @@
+name: Bauer Swanson monetary surprises
+on:
+  push:
+    branches: [research-hk-monetary-transmission]
+    paths:
+      - research/hk_monetary_transmission/fetch_bauer_swanson.py
+      - .github/workflows/bauer-swanson-data.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests
+      - run: python research/hk_monetary_transmission/fetch_bauer_swanson.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bauer-swanson-surprises
+          path: research_output/bauer_swanson
+          retention-days: 7
