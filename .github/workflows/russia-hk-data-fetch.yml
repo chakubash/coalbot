@@ -1,4 +1,4 @@
-name: Russia-HK documented mirror acquisition
+name: Russia-HK official aggregate total audit
 
 on:
   push:
@@ -6,27 +6,26 @@ on:
       - research/russia-hk-trade-20260805
     paths:
       - '.github/workflows/russia-hk-data-fetch.yml'
-      - 'research/russia_hk_mirror_acquire.py'
+      - 'research/russia_hk_totals_audit.py'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  acquire-mirror:
+  totals-audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install requests pandas numpy
-      - run: python research/russia_hk_mirror_acquire.py
+      - run: pip install requests pandas
+      - run: python research/russia_hk_totals_audit.py
       - uses: actions/upload-artifact@v4
         with:
-          name: russia-hk-mirror-acquisition
-          path: research/mirror_acquisition
+          name: russia-hk-totals-audit
+          path: research/totals_audit
           if-no-files-found: error
-          compression-level: 9
           retention-days: 7
