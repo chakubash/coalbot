@@ -16,7 +16,7 @@ RAW.mkdir(parents=True, exist_ok=True)
 
 SESSION = requests.Session()
 SESSION.headers.update({
-    "User-Agent": "AcademicResearchBot/1.0 (+https://github.com/chakubash/coalbot)",
+    "User-Agent": "AcademicResearchBot/1.1 (+https://github.com/chakubash/coalbot)",
     "Accept": "application/json,text/csv,text/plain,*/*",
 })
 
@@ -38,53 +38,85 @@ def save_manifest(name: str, url: str, status: str, rows: int | None = None, not
     })
 
 
-def request(url: str, timeout: int = 90) -> requests.Response:
+def request(url: str, timeout: int = 20, attempts: int = 2) -> requests.Response:
     last: Exception | None = None
-    for attempt in range(5):
+    for attempt in range(attempts):
         try:
             r = SESSION.get(url, timeout=timeout)
             r.raise_for_status()
             return r
         except Exception as exc:  # pragma: no cover - network retries
             last = exc
-            sleep_s = 2 ** attempt
-            log(f"retry {attempt + 1}/5 for {url}: {exc}; sleep={sleep_s}s")
+            sleep_s = 1 + attempt
+            log(f"retry {attempt + 1}/{attempts} for {url}: {exc}; sleep={sleep_s}s")
             time.sleep(sleep_s)
     raise RuntimeError(f"Failed to download {url}: {last}")
 
 
 def fetch_hkma(name: str, base_url: str, params: dict[str, Any] | None = None) -> pd.DataFrame:
     params = dict(params or {})
-    pagesize = 1000
+    # HKMA API accepts at most 100 rows per page on many endpoints.
+    pagesize = 100
     offset = 0
     records: list[dict[str, Any]] = []
+    declared_size: int | None = None
     while True:
         q = dict(params)
         q.update({"pagesize": pagesize, "offset": offset})
-        r = SESSION.get(base_url, params=q, timeout=90)
+        r = SESSION.get(base_url, params=q, timeout=30)
         r.raise_for_status()
         payload = r.json()
         result = payload.get("result", {})
         page = result.get("records", []) or []
+        if declared_size is None:
+            try:
+                declared_size = int(result.get("datasize"))
+            except (TypeError, ValueError):
+                declared_size = None
         if not isinstance(page, list):
             raise ValueError(f"Unexpected HKMA response for {name}: records not a list")
         records.extend(page)
-        log(f"HKMA {name}: offset={offset}, page={len(page)}, total={len(records)}")
+        log(
+            f"HKMA {name}: offset={offset}, page={len(page)}, "
+            f"total={len(records)}, declared={declared_size}"
+        )
+        if not page:
+            break
+        if declared_size is not None and len(records) >= declared_size:
+            break
         if len(page) < pagesize:
             break
-        offset += pagesize
-        if offset > 200000:
+        offset += len(page)
+        if offset > 100000:
             raise RuntimeError(f"Pagination guard triggered for {name}")
-        time.sleep(0.15)
+        time.sleep(0.05)
+
     df = pd.DataFrame(records)
+    if df.empty:
+        raise ValueError(f"HKMA endpoint {name} returned no records")
+    # Deduplicate defensively in case an endpoint repeats the last page.
+    df = df.drop_duplicates().reset_index(drop=True)
     path = RAW / f"{name}.csv"
     df.to_csv(path, index=False)
-    save_manifest(name, base_url, "ok", len(df), json.dumps(params, ensure_ascii=False))
+    save_manifest(
+        name,
+        base_url,
+        "ok",
+        len(df),
+        json.dumps({**params, "declared_size": declared_size}, ensure_ascii=False),
+    )
     return df
 
 
-def fetch_binary_or_text(name: str, url: str, suffix: str) -> Path:
-    r = request(url)
+def fetch_binary_or_text(
+    name: str,
+    url: str,
+    suffix: str,
+    *,
+    timeout: int = 20,
+    attempts: int = 2,
+) -> Path:
+    r = request(url, timeout=timeout, attempts=attempts)
     path = RAW / f"{name}{suffix}"
     path.write_bytes(r.content)
     save_manifest(name, url, "ok", None, f"bytes={len(r.content)}")
@@ -95,7 +127,7 @@ def fetch_binary_or_text(name: str, url: str, suffix: str) -> Path:
 def fetch_fred(series_id: str) -> None:
     url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
     try:
-        r = request(url)
+        r = request(url, timeout=20, attempts=2)
         text = r.text
         if "DATE" not in text.upper() or len(text) < 20:
             raise ValueError("FRED response does not look like CSV")
@@ -112,6 +144,7 @@ def fetch_fred(series_id: str) -> None:
 def fetch_yfinance(ticker: str, file_stub: str) -> None:
     try:
         import yfinance as yf
+
         df = yf.download(
             ticker,
             start="2004-12-01",
@@ -119,7 +152,7 @@ def fetch_yfinance(ticker: str, file_stub: str) -> None:
             auto_adjust=False,
             progress=False,
             threads=False,
-            timeout=60,
+            timeout=25,
         )
         if df is None or df.empty:
             raise ValueError("empty yfinance response")
@@ -157,19 +190,21 @@ def main() -> int:
             save_manifest(name, url, "failed", None, repr(exc))
             log(f"HKMA {name} FAILED: {exc}")
 
+    # Compact official and academic files. C&SD pages sometimes block automated
+    # downloads, so their failure is recorded rather than holding up the pipeline.
     downloads = [
-        ("rvd_private_domestic_price_index", "https://www.rvd.gov.hk/datagovhk/1.4M.csv", ".csv"),
-        ("csd_gdp_real_growth", "https://www.censtatd.gov.hk/en/web_table.html?id=310-30001&full_series=1&download_csv=1", ".csv"),
-        ("csd_unemployment", "https://www.censtatd.gov.hk/en/web_table.html?id=210-06103&full_series=1&download_csv=1", ".csv"),
-        ("csd_cpi", "https://www.censtatd.gov.hk/en/web_table.html?id=510-60001&full_series=1&download_csv=1", ".csv"),
-        ("csd_retail_sales", "https://www.censtatd.gov.hk/en/web_table.html?id=620-67001&full_series=1&download_csv=1", ".csv"),
-        ("jk_fomc_shocks_event", "https://raw.githubusercontent.com/marekjarocinski/jkshocks_update_fed/main/shocks_fed_jk_t.csv", ".csv"),
-        ("jk_fomc_shocks_monthly", "https://raw.githubusercontent.com/marekjarocinski/jkshocks_update_fed/main/shocks_fed_jk_m.csv", ".csv"),
-        ("jk_readme", "https://raw.githubusercontent.com/marekjarocinski/jkshocks_update_fed/main/README.md", ".md"),
+        ("rvd_private_domestic_price_index", "https://www.rvd.gov.hk/datagovhk/1.4M.csv", ".csv", 20, 2),
+        ("csd_gdp_real_growth", "https://www.censtatd.gov.hk/en/web_table.html?id=310-30001&full_series=1&download_csv=1", ".csv", 12, 1),
+        ("csd_unemployment", "https://www.censtatd.gov.hk/en/web_table.html?id=210-06103&full_series=1&download_csv=1", ".csv", 12, 1),
+        ("csd_cpi", "https://www.censtatd.gov.hk/en/web_table.html?id=510-60001&full_series=1&download_csv=1", ".csv", 12, 1),
+        ("csd_retail_sales", "https://www.censtatd.gov.hk/en/web_table.html?id=620-67001&full_series=1&download_csv=1", ".csv", 12, 1),
+        ("jk_fomc_shocks_event", "https://raw.githubusercontent.com/marekjarocinski/jkshocks_update_fed/main/shocks_fed_jk_t.csv", ".csv", 20, 2),
+        ("jk_fomc_shocks_monthly", "https://raw.githubusercontent.com/marekjarocinski/jkshocks_update_fed/main/shocks_fed_jk_m.csv", ".csv", 20, 2),
+        ("jk_readme", "https://raw.githubusercontent.com/marekjarocinski/jkshocks_update_fed/main/README.md", ".md", 20, 2),
     ]
-    for name, url, suffix in downloads:
+    for name, url, suffix, timeout, attempts in downloads:
         try:
-            fetch_binary_or_text(name, url, suffix)
+            fetch_binary_or_text(name, url, suffix, timeout=timeout, attempts=attempts)
         except Exception as exc:
             save_manifest(name, url, "failed", None, repr(exc))
             log(f"download {name} FAILED: {exc}")
@@ -183,7 +218,7 @@ def main() -> int:
     for sid in fred_series:
         fetch_fred(sid)
 
-    # Market-price series. These are auxiliary commercial-market data, not official statistics.
+    # Auxiliary commercial-market data, used only where official time series are unavailable.
     for ticker, stub in [
         ("^HSI", "hsi"),
         ("^HSCE", "hscei"),
