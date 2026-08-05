@@ -1,0 +1,26 @@
+name: Russia-HK current World Bank Pink Sheet
+on:
+  push:
+    branches: [research/russia-hk-trade-20260805]
+    paths:
+      - '.github/workflows/russia-hk-pinksheet-2026.yml'
+      - 'research/download_pinksheet_2026.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: pip install requests
+      - run: python research/download_pinksheet_2026.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pinksheet-2026
+          path: research/pinksheet_2026
+          if-no-files-found: error
+          retention-days: 7
