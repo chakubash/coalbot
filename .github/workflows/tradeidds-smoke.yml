@@ -1,0 +1,89 @@
+name: Trade-IDDS smoke test
+
+on:
+  push:
+    branches:
+      - research/russia-hk-trade-data-20260805
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install runtime
+        run: python -m pip install --disable-pip-version-check requests
+
+      - name: Fetch official Trade-IDDS smoke response
+        shell: bash
+        run: |
+          mkdir -p research_artifacts
+          python - <<'PY'
+          from __future__ import annotations
+          import hashlib
+          import json
+          from pathlib import Path
+          from datetime import datetime, timezone
+          import requests
+          import urllib3
+
+          urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+          out = Path('research_artifacts')
+          session = requests.Session()
+          session.headers.update({
+              'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/149 Safari/537.36',
+              'Accept': 'application/json,text/plain,*/*',
+              'Referer': 'https://tradeidds.censtatd.gov.hk/'
+          })
+          url = 'https://tradeidds.censtatd.gov.hk/api/get'
+          params = {
+              'lang': 'EN', 'sv': 'VCm', 'freq': 'M',
+              'period': '202501,202501', 'ttype': '1',
+              'codeclass': 'HKHS4', 'code': '8542'
+          }
+          r = session.get(url, params=params, timeout=90, verify=False)
+          body = r.content
+          (out / 'tradeidds_smoke.json').write_bytes(body)
+          meta = {
+              'requested_url': r.request.url,
+              'final_url': r.url,
+              'status_code': r.status_code,
+              'content_type': r.headers.get('content-type'),
+              'downloaded_at_utc': datetime.now(timezone.utc).isoformat(),
+              'sha256': hashlib.sha256(body).hexdigest(),
+              'response_headers': dict(r.headers),
+              'session_cookies': session.cookies.get_dict(),
+              'body_preview': body[:1000].decode('utf-8', errors='replace')
+          }
+          (out / 'tradeidds_smoke_meta.json').write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding='utf-8')
+          print(json.dumps(meta, indent=2, ensure_ascii=False))
+          r.raise_for_status()
+          payload = r.json()
+          status = payload.get('header', {}).get('status', {})
+          if status.get('name') != 'Success':
+              raise RuntimeError(f"Trade-IDDS returned non-success: {status}")
+          print('records', len(payload.get('dataSet', [])))
+          PY
+
+      - name: Upload smoke artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tradeidds-smoke
+          path: research_artifacts/
+          if-no-files-found: error
+          retention-days: 7
