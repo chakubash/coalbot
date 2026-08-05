@@ -1,4 +1,4 @@
-name: Trade-IDDS smoke test
+name: Trade-IDDS dimension probe
 
 on:
   push:
@@ -13,33 +13,25 @@ env:
   PYTHONUNBUFFERED: "1"
 
 jobs:
-  fetch:
+  probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
-      - name: Check out branch
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Install runtime
-        run: python -m pip install --disable-pip-version-check requests
-
-      - name: Fetch official Trade-IDDS smoke response
+      - run: python -m pip install --disable-pip-version-check requests
+      - name: Probe official Trade-IDDS dimensions
         shell: bash
         run: |
           mkdir -p research_artifacts
           python - <<'PY'
           from __future__ import annotations
-          import hashlib
-          import json
+          import hashlib, json, time
           from pathlib import Path
           from datetime import datetime, timezone
-          import requests
-          import urllib3
+          import requests, urllib3
 
           urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
           out = Path('research_artifacts')
@@ -49,41 +41,51 @@ jobs:
               'Accept': 'application/json,text/plain,*/*',
               'Referer': 'https://tradeidds.censtatd.gov.hk/'
           })
-          url = 'https://tradeidds.censtatd.gov.hk/api/get'
-          params = {
-              'lang': 'EN', 'sv': 'VCm', 'freq': 'M',
-              'period': '202501,202501', 'ttype': '1',
-              'codeclass': 'HKHS4', 'code': '8542'
+          endpoint = 'https://tradeidds.censtatd.gov.hk/api/get'
+          base = {'lang':'EN','sv':'VCm','freq':'M','codeclass':'HKHS4'}
+          cases = {
+              'import_origin_ru_202501': {**base,'period':'202501,202501','ttype':'1','coclass':'C','co':'RU'},
+              'import_consignment_ru_202501': {**base,'period':'202501,202501','ttype':'1','ccclass':'C','cc':'RU'},
+              'domestic_export_to_ru_202501': {**base,'period':'202501,202501','ttype':'2','ccclass':'C','cc':'RU'},
+              'reexport_to_ru_202501': {**base,'period':'202501,202501','ttype':'3','ccclass':'C','cc':'RU'},
+              'total_export_to_ru_202501': {**base,'period':'202501,202501','ttype':'4','ccclass':'C','cc':'RU'},
+              'reexport_to_ru_origin_all_202501': {**base,'period':'202501,202501','ttype':'3','coclass':'C','co':'ALL','ccclass':'C','cc':'RU'},
+              'reexport_to_ru_origin_cn_202501': {**base,'period':'202501,202501','ttype':'3','coclass':'C','co':'CN','ccclass':'C','cc':'RU'},
+              'world_imports_202501': {**base,'period':'202501,202501','ttype':'1'},
+              'latest_import_origin_ru_202606': {**base,'period':'202606,202606','ttype':'1','coclass':'C','co':'RU'},
+              'latest_import_origin_ru_202607': {**base,'period':'202607,202607','ttype':'1','coclass':'C','co':'RU'},
+              'latest_reexport_to_ru_202606': {**base,'period':'202606,202606','ttype':'3','ccclass':'C','cc':'RU'},
+              'latest_reexport_to_ru_202607': {**base,'period':'202607,202607','ttype':'3','ccclass':'C','cc':'RU'},
           }
-          r = session.get(url, params=params, timeout=90, verify=False)
-          body = r.content
-          (out / 'tradeidds_smoke.json').write_bytes(body)
-          meta = {
-              'requested_url': r.request.url,
-              'final_url': r.url,
-              'status_code': r.status_code,
-              'content_type': r.headers.get('content-type'),
-              'downloaded_at_utc': datetime.now(timezone.utc).isoformat(),
-              'sha256': hashlib.sha256(body).hexdigest(),
-              'response_headers': dict(r.headers),
-              'session_cookies': session.cookies.get_dict(),
-              'body_preview': body[:1000].decode('utf-8', errors='replace')
-          }
-          (out / 'tradeidds_smoke_meta.json').write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding='utf-8')
-          print(json.dumps(meta, indent=2, ensure_ascii=False))
-          r.raise_for_status()
-          payload = r.json()
-          status = payload.get('header', {}).get('status', {})
-          if status.get('name') != 'Success':
-              raise RuntimeError(f"Trade-IDDS returned non-success: {status}")
-          print('records', len(payload.get('dataSet', [])))
+          summary=[]
+          for i,(name,params) in enumerate(cases.items()):
+              if i: time.sleep(1.2)
+              r=session.get(endpoint,params=params,timeout=120,verify=False)
+              body=r.content
+              (out/f'{name}.json').write_bytes(body)
+              try: payload=r.json()
+              except Exception: payload={}
+              status=payload.get('header',{}).get('status',{})
+              data=payload.get('dataSet',[]) if isinstance(payload,dict) else []
+              fields=sorted({k for row in data[:100] for k in row.keys()}) if data else []
+              row={
+                'name':name,'requested_url':r.request.url,'final_url':r.url,
+                'http_status':r.status_code,'api_status':status.get('name'),
+                'api_code':status.get('code'),'api_message':status.get('message'),
+                'records':len(data),'fields':fields,
+                'first_record':data[0] if data else None,
+                'downloaded_at_utc':datetime.now(timezone.utc).isoformat(),
+                'sha256':hashlib.sha256(body).hexdigest(),
+              }
+              summary.append(row)
+              print(json.dumps(row,ensure_ascii=False))
+          (out/'probe_summary.json').write_text(json.dumps(summary,indent=2,ensure_ascii=False),encoding='utf-8')
           PY
-
-      - name: Upload smoke artifact
+      - name: Upload probe artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: tradeidds-smoke
+          name: tradeidds-dimension-probe
           path: research_artifacts/
           if-no-files-found: error
           retention-days: 7
