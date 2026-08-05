@@ -1,0 +1,36 @@
+name: HKMA official monthly data
+
+on:
+  push:
+    branches: [research-hk-monetary-transmission]
+    paths:
+      - ".github/scripts/fetch_hkma_monthly.py"
+      - ".github/workflows/hkma-monthly.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install pandas requests
+      - run: python .github/scripts/fetch_hkma_monthly.py
+      - name: Show files
+        if: always()
+        run: |
+          find research_output/hkma_monthly_official -maxdepth 1 -type f -printf '%p\t%k KB\n' | sort || true
+          cat research_output/hkma_monthly_official/manifest.csv || true
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hkma-monthly-official
+          path: research_output/hkma_monthly_official
+          if-no-files-found: error
+          retention-days: 7
