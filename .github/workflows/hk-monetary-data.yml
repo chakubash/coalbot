@@ -1,0 +1,50 @@
+name: HK monetary transmission data
+
+on:
+  push:
+    branches:
+      - research-hk-monetary-transmission
+    paths:
+      - "research/hk_monetary_transmission/**"
+      - ".github/workflows/hk-monetary-data.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pandas requests yfinance
+
+      - name: Download official and market data
+        run: python research/hk_monetary_transmission/fetch_official_data.py
+
+      - name: Show source manifest
+        if: always()
+        run: |
+          find research_output/hk_monetary_transmission -maxdepth 2 -type f -printf '%p\t%k KB\n' | sort || true
+          cat research_output/hk_monetary_transmission/source_manifest.csv || true
+
+      - name: Upload data package
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hk-monetary-official-data
+          path: research_output/hk_monetary_transmission
+          if-no-files-found: error
+          retention-days: 7
