@@ -1,4 +1,4 @@
-name: Russia-HK parallel edition-native extraction v3
+name: Russia-HK parallel edition-native extraction v4
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
     paths:
       - '.github/workflows/russia-hk-data-fetch.yml'
       - 'research/russia_hk_parallel_extract.py'
-      - 'research/patch_parallel_empty.py'
+      - 'research/patch_parallel_hkhs.py'
   workflow_dispatch:
 
 permissions:
@@ -35,11 +35,11 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install requests pandas numpy
-      - run: python research/patch_parallel_empty.py
+      - run: python research/patch_parallel_hkhs.py
       - run: python research/russia_hk_parallel_extract.py
       - uses: actions/upload-artifact@v4
         with:
-          name: parallel-${{ matrix.case }}-v3
+          name: parallel-${{ matrix.case }}-v4
           path: research/parallel_acquisition/${{ matrix.case }}
           if-no-files-found: error
           compression-level: 9
