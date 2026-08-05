@@ -1,0 +1,38 @@
+name: HKMA official daily offsets
+
+on:
+  push:
+    branches:
+      - research-hk-monetary-transmission
+    paths:
+      - "research/hk_monetary_transmission/fetch_hkma_offsets.py"
+      - ".github/workflows/hkma-offsets.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch-offsets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install pandas requests
+      - name: Fetch official HKMA daily pages
+        run: python research/hk_monetary_transmission/fetch_hkma_offsets.py
+      - name: Inspect manifest
+        if: always()
+        run: |
+          cat research_output/hkma_offsets/manifest.csv || true
+          find research_output/hkma_offsets -maxdepth 2 -type f -printf '%p\t%k KB\n' | sort || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hkma-official-daily-offsets
+          path: research_output/hkma_offsets
+          if-no-files-found: error
+          retention-days: 7
