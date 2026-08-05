@@ -1,4 +1,4 @@
-name: Russia-HK sequential parameter validation
+name: Russia-HK full official acquisition
 
 on:
   push:
@@ -6,26 +6,30 @@ on:
       - research/russia-hk-trade-20260805
     paths:
       - '.github/workflows/russia-hk-data-fetch.yml'
-      - 'research/russia_hk_probe6.py'
+      - 'research/russia_hk_full_acquire.py'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  validate:
+  acquire:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install requests
-      - run: python research/russia_hk_probe6.py
-      - uses: actions/upload-artifact@v4
+      - name: Install dependencies
+        run: pip install requests pandas numpy openpyxl
+      - name: Acquire and canonicalise official data
+        run: python research/russia_hk_full_acquire.py
+      - name: Upload official data package
+        uses: actions/upload-artifact@v4
         with:
-          name: russia-hk-probe6
-          path: research/probe6_output
+          name: russia-hk-full-acquisition
+          path: research/full_acquisition
           if-no-files-found: error
+          compression-level: 9
           retention-days: 7
