@@ -1,0 +1,35 @@
+name: Russia-HK Trade-IDDS POST probe
+on:
+  push:
+    branches: [research/russia-hk-trade-20260805]
+    paths:
+      - '.github/workflows/russia-hk-post-probe.yml'
+      - 'research/russia_hk_probe_post.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  form:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env: {MODE: form, N: '500'}
+    steps: &steps
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: pip install requests
+      - run: python research/russia_hk_probe_post.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: post-${{ env.MODE }}
+          path: research/probe_post/${{ env.MODE }}
+  json:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env: {MODE: json, N: '500'}
+    steps: *steps
+  query-post:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    env: {MODE: query_post, N: '100'}
+    steps: *steps
