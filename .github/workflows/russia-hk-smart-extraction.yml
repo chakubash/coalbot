@@ -1,10 +1,11 @@
-name: Russia-HK smart official extraction
+name: Russia-HK smart official extraction v2
 on:
   push:
     branches: [research/russia-hk-trade-20260805]
     paths:
       - '.github/workflows/russia-hk-smart-extraction.yml'
       - 'research/russia_hk_smart_extract.py'
+      - 'research/patch_smart_calls.py'
   workflow_dispatch:
 permissions:
   contents: read
@@ -23,10 +24,11 @@ jobs:
       - uses: actions/setup-python@v5
         with: {python-version: '3.12'}
       - run: pip install requests pandas numpy
+      - run: python research/patch_smart_calls.py
       - run: python research/russia_hk_smart_extract.py
       - uses: actions/upload-artifact@v4
         with:
-          name: smart-${{ matrix.case }}
+          name: smart-${{ matrix.case }}-v2
           path: research/smart_acquisition/${{ matrix.case }}
           if-no-files-found: error
           compression-level: 9
