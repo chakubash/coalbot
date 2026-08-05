@@ -1,0 +1,37 @@
+name: HK monetary fallback mirror
+
+on:
+  push:
+    branches:
+      - research-hk-monetary-transmission
+    paths:
+      - ".github/workflows/hk-fallback-data.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch-fallback:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download public research mirror
+        run: |
+          mkdir -p fallback
+          curl -fL --retry 3 --connect-timeout 15 \
+            "https://raw.githubusercontent.com/RianMehta21/hkd-peg-analysis/15e35810f4394c52492a2d8c0f9fc2e9b15b116d/data/master.csv" \
+            -o fallback/hkma_hkab_master_2005_2025.csv
+          curl -fL --retry 3 --connect-timeout 15 \
+            "https://raw.githubusercontent.com/RianMehta21/hkd-peg-analysis/15e35810f4394c52492a2d8c0f9fc2e9b15b116d/readme.md" \
+            -o fallback/mirror_readme.md
+          wc -l fallback/*
+          sha256sum fallback/* > fallback/sha256.txt
+
+      - name: Upload fallback data
+        uses: actions/upload-artifact@v4
+        with:
+          name: hk-monetary-fallback-data
+          path: fallback
+          if-no-files-found: error
+          retention-days: 7
