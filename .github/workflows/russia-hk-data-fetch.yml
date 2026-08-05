@@ -1,4 +1,4 @@
-name: Russia-HK cross-runner API probes
+name: Russia-HK sequential parameter validation
 
 on:
   push:
@@ -6,106 +6,26 @@ on:
       - research/russia-hk-trade-20260805
     paths:
       - '.github/workflows/russia-hk-data-fetch.yml'
-      - 'research/russia_hk_probe5.py'
+      - 'research/russia_hk_probe6.py'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  allcode-a-windows:
-    runs-on: windows-latest
-    timeout-minutes: 25
-    env:
-      CASE: allcode_A
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - run: pip install requests
-      - run: python research/russia_hk_probe5.py
+      - run: python research/russia_hk_probe6.py
       - uses: actions/upload-artifact@v4
         with:
-          name: probe5-allcode-a-windows
-          path: research/probe5_output/allcode_A
-  allcode-g-macos:
-    runs-on: macos-latest
-    timeout-minutes: 25
-    env:
-      CASE: allcode_G
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: pip install requests
-      - run: python research/russia_hk_probe5.py
-      - uses: actions/upload-artifact@v4
-        with:
-          name: probe5-allcode-g-macos
-          path: research/probe5_output/allcode_G
-  ttypeall-windows:
-    runs-on: windows-latest
-    timeout-minutes: 25
-    env:
-      CASE: ttypeall_cc_20
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: pip install requests
-      - run: python research/russia_hk_probe5.py
-      - uses: actions/upload-artifact@v4
-        with:
-          name: probe5-ttypeall-windows
-          path: research/probe5_output/ttypeall_cc_20
-  forigin-macos:
-    runs-on: macos-13
-    timeout-minutes: 25
-    env:
-      CASE: forigin20
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: pip install requests
-      - run: python research/russia_hk_probe5.py
-      - uses: actions/upload-artifact@v4
-        with:
-          name: probe5-forigin-macos
-          path: research/probe5_output/forigin20
-  world20-windows:
-    runs-on: windows-2022
-    timeout-minutes: 25
-    env:
-      CASE: world20
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: pip install requests
-      - run: python research/russia_hk_probe5.py
-      - uses: actions/upload-artifact@v4
-        with:
-          name: probe5-world20-windows
-          path: research/probe5_output/world20
-  hkma-macos:
-    runs-on: macos-14
-    timeout-minutes: 25
-    env:
-      CASE: hkma
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: pip install requests
-      - run: python research/russia_hk_probe5.py
-      - uses: actions/upload-artifact@v4
-        with:
-          name: probe5-hkma-macos
-          path: research/probe5_output/hkma
+          name: russia-hk-probe6
+          path: research/probe6_output
+          if-no-files-found: error
+          retention-days: 7
