@@ -1,4 +1,4 @@
-name: Russia-HK parallel edition-native extraction
+name: Russia-HK parallel edition-native extraction v2
 
 on:
   push:
@@ -22,10 +22,29 @@ jobs:
       - uses: actions/setup-python@v5
         with: {python-version: '3.12'}
       - run: pip install requests pandas numpy
+      - name: Treat official no-record batches as verified empty results
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('research/russia_hk_parallel_extract.py')
+          s = p.read_text(encoding='utf-8')
+          old = "   if r.status_code==200 and (not st or st.get('name')=='Success'):\n"
+          new = """   msg = st.get('message', '') if isinstance(st, dict) else ''
+   msg_text = ' '.join(map(str, msg)) if isinstance(msg, list) else str(msg)
+   if r.status_code==200 and st.get('name')=='Fail' and 'No record found' in msg_text:
+    j = {'header': {'status': {'name': 'Success'}, 'count': {'noOfRecords': 0}, 'title': j.get('header', {}).get('title')}, 'dataSet': []}
+    st = j['header']['status']
+   if r.status_code==200 and (not st or st.get('name')=='Success'):
+"""
+          if old not in s:
+              raise SystemExit('patch target not found')
+          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+          PY
       - run: python research/russia_hk_parallel_extract.py
       - uses: actions/upload-artifact@v4
         with:
-          name: parallel-${{ env.CASE }}
+          name: parallel-${{ env.CASE }}-v2
           path: research/parallel_acquisition/${{ env.CASE }}
           if-no-files-found: error
           compression-level: 9
@@ -54,9 +73,4 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env: {CASE: G_hk_world_imports}
-    steps: *steps
-  extract-support:
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    env: {CASE: SUPPORT}
     steps: *steps
