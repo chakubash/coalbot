@@ -1,0 +1,31 @@
+name: HKMA API range probe
+
+on:
+  push:
+    branches: [research-hk-monetary-transmission]
+    paths:
+      - "research/hk_monetary_transmission/probe_hkma_ranges.py"
+      - ".github/workflows/hkma-probe.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install requests
+      - run: python research/hk_monetary_transmission/probe_hkma_ranges.py
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hkma-probe
+          path: research_output/hkma_probe
+          if-no-files-found: error
+          retention-days: 7
