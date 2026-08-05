@@ -1,0 +1,35 @@
+name: Russia-HK actual multi-code ceiling probe
+on:
+  push:
+    branches: [research/russia-hk-trade-20260805]
+    paths:
+      - '.github/workflows/russia-hk-many-code-probe.yml'
+      - 'research/russia_hk_probe_many_codes.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe100:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env: {N: '100', PERIOD: '202501'}
+    steps: &steps
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: pip install requests
+      - run: python research/russia_hk_probe_many_codes.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: many-code-${{ env.N }}
+          path: research/probe_many_codes/${{ env.N }}
+  probe200:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    env: {N: '200', PERIOD: '202501'}
+    steps: *steps
+  probe500:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env: {N: '500', PERIOD: '202501'}
+    steps: *steps
