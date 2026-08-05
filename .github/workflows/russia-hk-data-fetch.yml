@@ -1,4 +1,4 @@
-name: Russia-HK official aggregate total audit
+name: Russia-HK parallel edition-native extraction
 
 on:
   push:
@@ -6,26 +6,57 @@ on:
       - research/russia-hk-trade-20260805
     paths:
       - '.github/workflows/russia-hk-data-fetch.yml'
-      - 'research/russia_hk_totals_audit.py'
+      - 'research/russia_hk_parallel_extract.py'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  totals-audit:
+  extract-a:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
+    timeout-minutes: 45
+    env: {CASE: A_import_origin_russia}
+    steps: &steps
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: pip install requests pandas
-      - run: python research/russia_hk_totals_audit.py
+        with: {python-version: '3.12'}
+      - run: pip install requests pandas numpy
+      - run: python research/russia_hk_parallel_extract.py
       - uses: actions/upload-artifact@v4
         with:
-          name: russia-hk-totals-audit
-          path: research/totals_audit
+          name: parallel-${{ env.CASE }}
+          path: research/parallel_acquisition/${{ env.CASE }}
           if-no-files-found: error
+          compression-level: 9
           retention-days: 7
+  extract-b:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env: {CASE: B_import_consignment_russia}
+    steps: *steps
+  extract-c:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env: {CASE: C_domestic_exports_russia}
+    steps: *steps
+  extract-d:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env: {CASE: D_re_exports_russia}
+    steps: *steps
+  extract-e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env: {CASE: E_total_exports_russia}
+    steps: *steps
+  extract-g:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env: {CASE: G_hk_world_imports}
+    steps: *steps
+  extract-support:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env: {CASE: SUPPORT}
+    steps: *steps
