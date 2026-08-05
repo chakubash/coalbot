@@ -1,4 +1,4 @@
-name: Russia-HK full official acquisition
+name: Russia-HK documented mirror acquisition
 
 on:
   push:
@@ -6,30 +6,27 @@ on:
       - research/russia-hk-trade-20260805
     paths:
       - '.github/workflows/russia-hk-data-fetch.yml'
-      - 'research/russia_hk_full_acquire.py'
+      - 'research/russia_hk_mirror_acquire.py'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  acquire:
+  acquire-mirror:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install dependencies
-        run: pip install requests pandas numpy openpyxl
-      - name: Acquire and canonicalise official data
-        run: python research/russia_hk_full_acquire.py
-      - name: Upload official data package
-        uses: actions/upload-artifact@v4
+      - run: pip install requests pandas numpy
+      - run: python research/russia_hk_mirror_acquire.py
+      - uses: actions/upload-artifact@v4
         with:
-          name: russia-hk-full-acquisition
-          path: research/full_acquisition
+          name: russia-hk-mirror-acquisition
+          path: research/mirror_acquisition
           if-no-files-found: error
           compression-level: 9
           retention-days: 7
