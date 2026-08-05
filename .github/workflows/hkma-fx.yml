@@ -1,0 +1,26 @@
+name: HKMA official exchange rates
+on:
+  push:
+    branches: [research-hk-monetary-transmission]
+    paths:
+      - research/hk_monetary_transmission/fetch_hkma_fx.py
+      - .github/workflows/hkma-fx.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pandas requests
+      - run: python research/hk_monetary_transmission/fetch_hkma_fx.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hkma-official-fx
+          path: research_output/hkma_fx
+          retention-days: 7
