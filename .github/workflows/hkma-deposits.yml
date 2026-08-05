@@ -1,0 +1,31 @@
+name: HKMA official deposit data
+
+on:
+  push:
+    branches: [research-hk-monetary-transmission]
+    paths:
+      - ".github/scripts/fetch_hkma_deposits.py"
+      - ".github/workflows/hkma-deposits.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install pandas requests
+      - run: python .github/scripts/fetch_hkma_deposits.py
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hkma-deposits-official
+          path: research_output/hkma_deposits_official
+          if-no-files-found: error
+          retention-days: 7
