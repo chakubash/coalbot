@@ -1,4 +1,4 @@
-name: Russia-HK Trade-IDDS fast probe
+name: Russia-HK Trade-IDDS extraction design probe
 
 on:
   push:
@@ -6,14 +6,14 @@ on:
       - research/russia-hk-trade-20260805
     paths:
       - '.github/workflows/russia-hk-data-fetch.yml'
-      - 'research/russia_hk_probe3.py'
+      - 'research/russia_hk_probe4.py'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  fetch:
+  long1:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -21,14 +21,79 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install dependency
-        run: pip install requests
-      - name: Probe Trade-IDDS
-        run: python research/russia_hk_probe3.py
-      - name: Upload probe artifact
-        uses: actions/upload-artifact@v4
+      - run: pip install requests
+      - run: CASE=long1 python research/russia_hk_probe4.py
+      - uses: actions/upload-artifact@v4
         with:
-          name: russia-hk-probe3
-          path: research/probe3_output
-          if-no-files-found: error
-          retention-days: 7
+          name: probe4-long1
+          path: research/probe4_output/long1
+  long20:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests
+      - run: CASE=long20 python research/russia_hk_probe4.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: probe4-long20
+          path: research/probe4_output/long20
+  six20:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests
+      - run: CASE=six20 python research/russia_hk_probe4.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: probe4-six20
+          path: research/probe4_output/six20
+  flows20:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests
+      - run: CASE=flows20 python research/russia_hk_probe4.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: probe4-flows20
+          path: research/probe4_output/flows20
+  forigin1:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests
+      - run: CASE=forigin1 python research/russia_hk_probe4.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: probe4-forigin1
+          path: research/probe4_output/forigin1
+  world20:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests
+      - run: CASE=world20 python research/russia_hk_probe4.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: probe4-world20
+          path: research/probe4_output/world20
