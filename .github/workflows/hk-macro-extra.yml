@@ -1,0 +1,47 @@
+name: HK macro extra data
+
+on:
+  push:
+    branches:
+      - research-hk-monetary-transmission
+    paths:
+      - ".github/workflows/hk-macro-extra.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch-extra:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download C&SD JSON and FRED series
+        run: |
+          mkdir -p extra
+          for spec in \
+            "gdp:310-30001" \
+            "unemployment:210-06103" \
+            "cpi:510-60001" \
+            "retail_sales:620-67001"; do
+            name="${spec%%:*}"
+            id="${spec##*:}"
+            curl -fL --retry 3 --connect-timeout 15 \
+              "https://www.censtatd.gov.hk/api/get.php?id=${id}&lang=en&full_series=1" \
+              -o "extra/csd_${name}.json"
+          done
+          for sid in QHKN628BIS CHNBSCICP02STSAM CHNPRINTO01IXPYM; do
+            curl -fL --retry 3 --connect-timeout 15 \
+              "https://fred.stlouisfed.org/graph/fredgraph.csv?id=${sid}" \
+              -o "extra/fred_${sid}.csv"
+          done
+          find extra -type f -maxdepth 1 -printf '%f\t%k KB\n' | sort
+          sha256sum extra/* > extra/sha256.txt
+
+      - name: Upload extra data
+        uses: actions/upload-artifact@v4
+        with:
+          name: hk-macro-extra-data
+          path: extra
+          if-no-files-found: error
+          retention-days: 7
