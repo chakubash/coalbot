@@ -1,4 +1,4 @@
-name: Trade-IDDS dimension probe
+name: Trade-IDDS API shape probe
 
 on:
   push:
@@ -15,77 +15,64 @@ env:
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: python -m pip install --disable-pip-version-check requests
-      - name: Probe official Trade-IDDS dimensions
+      - name: Probe official Trade-IDDS request shapes
         shell: bash
         run: |
-          mkdir -p research_artifacts
+          rm -rf research_artifacts && mkdir -p research_artifacts
           python - <<'PY'
           from __future__ import annotations
           import hashlib, json, time
           from pathlib import Path
           from datetime import datetime, timezone
           import requests, urllib3
-
           urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-          out = Path('research_artifacts')
-          session = requests.Session()
-          session.headers.update({
-              'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/149 Safari/537.36',
-              'Accept': 'application/json,text/plain,*/*',
-              'Referer': 'https://tradeidds.censtatd.gov.hk/'
-          })
-          endpoint = 'https://tradeidds.censtatd.gov.hk/api/get'
-          base = {'lang':'EN','sv':'VCm','freq':'M','codeclass':'HKHS4'}
-          cases = {
-              'import_origin_ru_202501': {**base,'period':'202501,202501','ttype':'1','coclass':'C','co':'RU'},
-              'import_consignment_ru_202501': {**base,'period':'202501,202501','ttype':'1','ccclass':'C','cc':'RU'},
-              'domestic_export_to_ru_202501': {**base,'period':'202501,202501','ttype':'2','ccclass':'C','cc':'RU'},
-              'reexport_to_ru_202501': {**base,'period':'202501,202501','ttype':'3','ccclass':'C','cc':'RU'},
-              'total_export_to_ru_202501': {**base,'period':'202501,202501','ttype':'4','ccclass':'C','cc':'RU'},
-              'reexport_to_ru_origin_all_202501': {**base,'period':'202501,202501','ttype':'3','coclass':'C','co':'ALL','ccclass':'C','cc':'RU'},
-              'reexport_to_ru_origin_cn_202501': {**base,'period':'202501,202501','ttype':'3','coclass':'C','co':'CN','ccclass':'C','cc':'RU'},
-              'world_imports_202501': {**base,'period':'202501,202501','ttype':'1'},
-              'latest_import_origin_ru_202606': {**base,'period':'202606,202606','ttype':'1','coclass':'C','co':'RU'},
-              'latest_import_origin_ru_202607': {**base,'period':'202607,202607','ttype':'1','coclass':'C','co':'RU'},
-              'latest_reexport_to_ru_202606': {**base,'period':'202606,202606','ttype':'3','ccclass':'C','cc':'RU'},
-              'latest_reexport_to_ru_202607': {**base,'period':'202607,202607','ttype':'3','ccclass':'C','cc':'RU'},
+          out=Path('research_artifacts')
+          s=requests.Session(); s.headers.update({'User-Agent':'Mozilla/5.0 Chrome/149','Accept':'application/json,text/plain,*/*','Referer':'https://tradeidds.censtatd.gov.hk/'})
+          endpoint='https://tradeidds.censtatd.gov.hk/api/get'
+          common={'lang':'EN','sv':'VCm','freq':'M'}
+          batch='0101,0102,0103,0104,0105,0106,0201,0202,0203,0204,0205,0206,0207,0208,0209,0210,0301,0302,0303,0304'
+          cases={
+            'total_import_origin_ru_no_commodity':{**common,'period':'202501,202501','ttype':'1','coclass':'C','co':'RU'},
+            'total_import_consignment_ru_no_commodity':{**common,'period':'202501,202501','ttype':'1','ccclass':'C','cc':'RU'},
+            'total_reexport_to_ru_no_commodity':{**common,'period':'202501,202501','ttype':'3','ccclass':'C','cc':'RU'},
+            'total_reexport_to_ru_origin_all_no_commodity':{**common,'period':'202501,202501','ttype':'3','coclass':'C','co':'ALL','ccclass':'C','cc':'RU'},
+            'total_reexport_to_ru_origin_cn_no_commodity':{**common,'period':'202501,202501','ttype':'3','coclass':'C','co':'CN','ccclass':'C','cc':'RU'},
+            'hs4_total_code':{**common,'period':'202501,202501','ttype':'1','coclass':'C','co':'RU','codeclass':'HKHS4','code':'TOTAL'},
+            'hs4_reexport_origin_all_8542':{**common,'period':'202501,202501','ttype':'3','coclass':'C','co':'ALL','ccclass':'C','cc':'RU','codeclass':'HKHS4','code':'8542'},
+            'hs4_reexport_origin_cn_8542':{**common,'period':'202501,202501','ttype':'3','coclass':'C','co':'CN','ccclass':'C','cc':'RU','codeclass':'HKHS4','code':'8542'},
+            'hs4_import_origin_ru_multi_202501':{**common,'period':'202501,202501','ttype':'1','coclass':'C','co':'RU','codeclass':'HKHS4','code':'7102,7106,7108,7110,7112,8471,8517,8523,8536,8541,8542'},
+            'hs4_import_origin_ru_batch_2012_2016':{**common,'period':'201201,201612','ttype':'1','coclass':'C','co':'RU','codeclass':'HKHS4','code':batch},
+            'hs4_world_import_batch_2012_2016':{**common,'period':'201201,201612','ttype':'1','codeclass':'HKHS4','code':batch},
+            'latest_total_import_origin_ru_202606':{**common,'period':'202606,202606','ttype':'1','coclass':'C','co':'RU'},
+            'latest_total_reexport_ru_202606':{**common,'period':'202606,202606','ttype':'3','ccclass':'C','cc':'RU'},
           }
           summary=[]
           for i,(name,params) in enumerate(cases.items()):
-              if i: time.sleep(1.2)
-              r=session.get(endpoint,params=params,timeout=120,verify=False)
-              body=r.content
-              (out/f'{name}.json').write_bytes(body)
-              try: payload=r.json()
-              except Exception: payload={}
-              status=payload.get('header',{}).get('status',{})
-              data=payload.get('dataSet',[]) if isinstance(payload,dict) else []
-              fields=sorted({k for row in data[:100] for k in row.keys()}) if data else []
-              row={
-                'name':name,'requested_url':r.request.url,'final_url':r.url,
-                'http_status':r.status_code,'api_status':status.get('name'),
-                'api_code':status.get('code'),'api_message':status.get('message'),
-                'records':len(data),'fields':fields,
-                'first_record':data[0] if data else None,
-                'downloaded_at_utc':datetime.now(timezone.utc).isoformat(),
-                'sha256':hashlib.sha256(body).hexdigest(),
-              }
-              summary.append(row)
-              print(json.dumps(row,ensure_ascii=False))
+            if i: time.sleep(0.7)
+            r=s.get(endpoint,params=params,timeout=180,verify=False); body=r.content
+            (out/f'{name}.json').write_bytes(body)
+            try: p=r.json()
+            except Exception: p={}
+            st=p.get('header',{}).get('status',{}) if isinstance(p,dict) else {}
+            data=p.get('dataSet',[]) if isinstance(p,dict) else []
+            fields=sorted({k for x in data[:500] for k in x}) if data else []
+            origins=sorted({str(x.get('co')) for x in data if x.get('co') is not None})[:30]
+            row={'name':name,'url':r.request.url,'http_status':r.status_code,'api_status':st.get('name'),'api_code':st.get('code'),'api_message':st.get('message'),'records':len(data),'fields':fields,'origins_sample':origins,'first_record':data[0] if data else None,'last_record':data[-1] if data else None,'downloaded_at_utc':datetime.now(timezone.utc).isoformat(),'sha256':hashlib.sha256(body).hexdigest()}
+            summary.append(row); print(json.dumps(row,ensure_ascii=False))
           (out/'probe_summary.json').write_text(json.dumps(summary,indent=2,ensure_ascii=False),encoding='utf-8')
           PY
       - name: Upload probe artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: tradeidds-dimension-probe
+          name: tradeidds-api-shape-probe
           path: research_artifacts/
           if-no-files-found: error
           retention-days: 7
