@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 jobs:
-  diagnose-tradeidds:
+  tradeidds-probe:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -23,40 +23,10 @@ jobs:
           python-version: '3.12'
       - name: Install dependencies
         run: pip install requests beautifulsoup4 pandas openpyxl
-      - name: Run Trade-IDDS diagnostics
-        shell: bash
-        run: |
-          set -euxo pipefail
-          mkdir -p acquired/diagnostics
-          python - <<'PY'
-          import json, pathlib, requests, re
-          from urllib.parse import urljoin
-          out=pathlib.Path('acquired/diagnostics')
-          s=requests.Session()
-          s.headers.update({
-              'User-Agent':'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-              'Accept':'text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7',
-              'Accept-Language':'en-US,en;q=0.9',
-          })
-          urls=[
-            'https://tradeidds.censtatd.gov.hk/',
-            'https://tradeidds.censtatd.gov.hk/Index/ceb455b8811d4b49acd147f01382540c',
-            'https://tradeidds.censtatd.gov.hk/api/get?lang=EN&sv=VCm&freq=M&period=202501,202501&ttype=1&codeclass=HKHS4&code=8542',
-            'https://tradeidds.censtatd.gov.hk/api/get?lang=EN&sv=VCm&freq=M&period=202501,202501&ttype=1&coclass=C&co=RU&codeclass=HKHS2&code=71',
-          ]
-          report=[]
-          for i,u in enumerate(urls):
-              try:
-                  r=s.get(u,timeout=60,allow_redirects=True)
-                  (out/f'{i}_body.bin').write_bytes(r.content)
-                  report.append({'url':u,'final_url':r.url,'status':r.status_code,'headers':dict(r.headers),'cookies':s.cookies.get_dict(),'history':[{'status':h.status_code,'url':h.url,'location':h.headers.get('location')} for h in r.history],'text_head':r.text[:2000]})
-              except Exception as e:
-                  report.append({'url':u,'error':repr(e),'cookies':s.cookies.get_dict()})
-          (out/'report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
-          print(json.dumps(report,ensure_ascii=False,indent=2))
-          PY
+      - name: Probe official Trade-IDDS API
+        run: python research_tools/probe_tradeidds.py
       - uses: actions/upload-artifact@v4
         with:
-          name: tradeidds-diagnostics
+          name: tradeidds-probe
           path: acquired/
           retention-days: 3
