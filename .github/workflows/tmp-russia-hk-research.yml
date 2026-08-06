@@ -1,0 +1,131 @@
+name: Temporary Russia-Hong Kong Research Fetch
+
+on:
+  push:
+    branches: [tmp-russia-hk-research-20260806]
+    paths:
+      - '.github/workflows/tmp-russia-hk-research.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: tmp-russia-hk-research-20260806
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Parallel fetch official data
+        run: |
+          python - <<'PY'
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+          from pathlib import Path
+          import hashlib, json, time, urllib.parse, urllib.request
+
+          OUT = Path('tmp_russia_hk_research_data')
+          OUT.mkdir(exist_ok=True)
+          UA = {'User-Agent':'Mozilla/5.0 academic-research-reproducibility/1.0','Accept':'application/json,*/*'}
+          jobs = []
+          common = {'partner2Code':'0','customsCode':'C00','motCode':'0','maxRecords':'500','format':'json','breakdownMode':'classic','includeDesc':'true'}
+          A = 'https://comtradeapi.un.org/public/v1/preview/C/A/HS'
+          M = 'https://comtradeapi.un.org/public/v1/preview/C/M/HS'
+
+          def add(name, base, params): jobs.append((name, base, params))
+
+          # Annual HKG reporter: imports, exports, re-exports, totals and complete HS2.
+          for y in range(2012, 2026):
+              for flow in ('M','X','RX'):
+                  for cmd in ('TOTAL','AG2'):
+                      add(f'ct_HKG_RUS_A_{y}_{flow}_{cmd}', A, dict(common, period=str(y), reporterCode='344', partnerCode='643', flowCode=flow, cmdCode=cmd))
+              add(f'ct_HKG_WORLD_A_{y}_M_AG2', A, dict(common, period=str(y), reporterCode='344', partnerCode='0', flowCode='M', cmdCode='AG2'))
+              # Mirrors: annual totals only, preserving missingness after 2022.
+              for flow in ('M','X'):
+                  add(f'ct_RUS_HKG_A_{y}_{flow}_TOTAL', A, dict(common, period=str(y), reporterCode='643', partnerCode='344', flowCode=flow, cmdCode='TOTAL'))
+
+          # Monthly origin imports and total exports for interrupted time-series models.
+          for y in range(2012, 2026):
+              for mo in range(1,13):
+                  p=f'{y}{mo:02d}'
+                  for flow in ('M','X'):
+                      add(f'ct_HKG_RUS_M_{p}_{flow}_TOTAL', M, dict(common, period=p, reporterCode='344', partnerCode='643', flowCode=flow, cmdCode='TOTAL'))
+
+          # Recent HS4 commodity structure for imports, total exports and re-exports.
+          for y in range(2021, 2026):
+              for flow in ('M','X','RX'):
+                  add(f'ct_HKG_RUS_A_{y}_{flow}_AG4', A, dict(common, period=str(y), reporterCode='344', partnerCode='643', flowCode=flow, cmdCode='AG4'))
+
+          assert len(jobs) == 477, len(jobs)
+
+          def fetch_one(job):
+              name, base, params = job
+              url = base + '?' + urllib.parse.urlencode(params)
+              err = None
+              for attempt in range(2):
+                  try:
+                      req = urllib.request.Request(url, headers=UA)
+                      with urllib.request.urlopen(req, timeout=20) as r:
+                          body = r.read(); status=getattr(r,'status',200)
+                      payload=json.loads(body)
+                      p=OUT/f'{name}.json'; p.write_bytes(body)
+                      return {'name':name,'url':url,'status':'ok','http_status':status,'bytes':len(body),'sha256':hashlib.sha256(body).hexdigest(),'count':payload.get('count'),'validation':payload.get('validation'),'file':p.name}
+                  except Exception as e:
+                      err=repr(e); time.sleep(0.8*(attempt+1))
+              return {'name':name,'url':url,'status':'error','error':err}
+
+          log=[]
+          with ThreadPoolExecutor(max_workers=6) as ex:
+              futs=[ex.submit(fetch_one,j) for j in jobs]
+              for i,f in enumerate(as_completed(futs),1):
+                  log.append(f.result())
+                  if i%50==0: print('completed',i,'of',len(futs),flush=True)
+
+          # Non-Comtrade official resources, sequential.
+          def fetch_binary(name,url,timeout=90):
+              try:
+                  req=urllib.request.Request(url,headers=UA)
+                  with urllib.request.urlopen(req,timeout=timeout) as r:
+                      body=r.read(); status=getattr(r,'status',200); ctype=r.headers.get('content-type','')
+                  ext='.xlsx' if body[:2]==b'PK' else '.html'
+                  p=OUT/f'{name}{ext}'; p.write_bytes(body)
+                  log.append({'name':name,'url':url,'status':'ok','http_status':status,'bytes':len(body),'sha256':hashlib.sha256(body).hexdigest(),'content_type':ctype,'file':p.name})
+              except Exception as e: log.append({'name':name,'url':url,'status':'error','error':repr(e)})
+
+          hkma='https://api.hkma.gov.hk/public/market-data-and-statistics/monthly-statistical-bulletin/er-ir/er-eeri-periodaverage'
+          for offset in range(0,1200,100):
+              name=f'hkma_fx_{offset}'; url=hkma+'?'+urllib.parse.urlencode({'pagesize':'100','offset':str(offset)})
+              try:
+                  req=urllib.request.Request(url,headers=UA)
+                  with urllib.request.urlopen(req,timeout=30) as r: body=r.read()
+                  payload=json.loads(body); p=OUT/f'{name}.json'; p.write_bytes(body)
+                  records=payload.get('result',{}).get('records',[])
+                  log.append({'name':name,'url':url,'status':'ok','bytes':len(body),'sha256':hashlib.sha256(body).hexdigest(),'records':len(records),'file':p.name})
+                  if not records or len(records)<100: break
+              except Exception as e:
+                  log.append({'name':name,'url':url,'status':'error','error':repr(e)}); break
+
+          fetch_binary('worldbank_CMO_Historical_Data_Monthly','https://thedocs.worldbank.org/en/doc/74e8be41ceb20fa0da750cda2f6b9e4e-0050012026/related/CMO-Historical-Data-Monthly.xlsx')
+          for name,url in {
+              'tid_trade_partners_2025':'https://www.tid.gov.hk/en/our_work/statistics/trade_partners.html',
+              'tid_reexports_destination_2025':'https://www.tid.gov.hk/en/our_work/statistics/tradestat/rxdes.html',
+              'tid_domestic_exports_destination_2025':'https://www.tid.gov.hk/en/our_work/statistics/tradestat/exdes.html',
+              'tid_imports_supplier_2025':'https://www.tid.gov.hk/en/our_work/statistics/tradestat/imsup.html',
+          }.items(): fetch_binary(name,url,45)
+
+          log.sort(key=lambda x:x['name'])
+          (OUT/'fetch_log.json').write_text(json.dumps(log,ensure_ascii=False,indent=2),encoding='utf-8')
+          ok=sum(x['status']=='ok' for x in log); err=sum(x['status']=='error' for x in log)
+          (OUT/'SUMMARY.txt').write_text(f'comtrade_jobs={len(jobs)}\nok={ok}\nerror={err}\n',encoding='utf-8')
+          print('SUMMARY',ok,err,flush=True)
+          PY
+      - name: Commit fetched files
+        run: |
+          git config user.name 'research-data-bot'
+          git config user.email 'research-data-bot@users.noreply.github.com'
+          git add tmp_russia_hk_research_data
+          git commit -m 'Fetch official Russia-Hong Kong research data' || exit 0
+          git push origin HEAD:tmp-russia-hk-research-20260806
