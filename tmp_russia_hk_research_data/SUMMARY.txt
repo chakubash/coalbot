@@ -1,0 +1,3 @@
+comtrade_jobs=477
+ok=161
+error=327
