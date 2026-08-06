@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 jobs:
-  tradeidds-probe2:
+  references-probe:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -22,11 +22,11 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install dependencies
-        run: pip install requests beautifulsoup4 pandas openpyxl
-      - name: Probe official Trade-IDDS API and HKHS downloads
-        run: python research_tools/probe_tradeidds2.py
+        run: pip install requests pandas openpyxl
+      - name: Fetch official classification catalog and probe mirrors
+        run: python research_tools/fetch_references_probe.py
       - uses: actions/upload-artifact@v4
         with:
-          name: tradeidds-probe2
+          name: references-probe
           path: acquired/
           retention-days: 3
