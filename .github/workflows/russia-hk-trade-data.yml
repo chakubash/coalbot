@@ -13,7 +13,51 @@ permissions:
   contents: read
 
 jobs:
-  references-probe:
+  tradeidds-hs4:
+    name: Trade-IDDS ${{ matrix.extract }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        extract:
+          - A_import_origin_russia
+          - B_import_consignment_russia
+          - C_domestic_exports_russia
+          - D_re_exports_russia
+          - E_total_exports_russia
+          - G_hk_world_imports
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests pandas
+      - run: python research_tools/fetch_tradeidds_extract.py ${{ matrix.extract }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tradeidds-${{ matrix.extract }}
+          path: acquired/${{ matrix.extract }}/
+          retention-days: 3
+
+  tradeidds-support:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests pandas
+      - run: python research_tools/fetch_tradeidds_support.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tradeidds-support
+          path: acquired/tradeidds_support/
+          retention-days: 3
+
+  external-support:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -21,12 +65,26 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install dependencies
-        run: pip install requests pandas openpyxl
-      - name: Fetch official classification catalog and probe mirrors
-        run: python research_tools/fetch_references_probe.py
+      - run: pip install requests pandas openpyxl beautifulsoup4
+      - run: python research_tools/fetch_external_support.py
       - uses: actions/upload-artifact@v4
         with:
-          name: references-probe
-          path: acquired/
+          name: external-support
+          path: acquired/external_support/
+          retention-days: 3
+
+  mirrors:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests pandas
+      - run: python research_tools/fetch_comtrade_mirrors.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mirrors
+          path: acquired/mirrors/
           retention-days: 3
