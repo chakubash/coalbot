@@ -1,0 +1,30 @@
+name: Russia-HK mirrors v2
+
+on:
+  push:
+    branches:
+      - research/russia-hk-trade-data-20260806
+    paths:
+      - '.github/workflows/russia-hk-mirrors-v2.yml'
+      - 'research_tools/fetch_comtrade_mirrors_v2.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mirrors-v2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests pandas
+      - run: python research_tools/fetch_comtrade_mirrors_v2.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mirrors-v2
+          path: acquired/mirrors_v2/
+          retention-days: 3
