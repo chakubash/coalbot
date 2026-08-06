@@ -1,0 +1,41 @@
+name: Temporary Russia-Hong Kong Data Bundle
+
+on:
+  push:
+    branches: [tmp-russia-hk-bundle-20260806]
+    paths:
+      - '.github/workflows/tmp-russia-hk-bundle.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: tmp-russia-hk-bundle-20260806
+      - name: Create immutable bundle
+        run: |
+          python - <<'PY'
+          import hashlib, json, zipfile
+          from pathlib import Path
+          root=Path('tmp_russia_hk_research_data')
+          manifest=[]
+          for p in sorted(root.rglob('*')):
+              if p.is_file():
+                  b=p.read_bytes()
+                  manifest.append({'file':str(p.relative_to(root)),'bytes':len(b),'sha256':hashlib.sha256(b).hexdigest()})
+          (root/'BUNDLE_MANIFEST.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8')
+          with zipfile.ZipFile('Russia_HongKong_Official_Data_2026-08-06.zip','w',compression=zipfile.ZIP_DEFLATED) as z:
+              for p in sorted(root.rglob('*')):
+                  if p.is_file(): z.write(p,p.as_posix())
+          print('files',len(manifest))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Russia-HongKong-Official-Data-2026-08-06
+          path: Russia_HongKong_Official_Data_2026-08-06.zip
+          if-no-files-found: error
+          retention-days: 1
