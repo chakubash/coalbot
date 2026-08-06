@@ -1,0 +1,62 @@
+name: Russia-HK support data only
+
+on:
+  push:
+    branches:
+      - research/russia-hk-trade-data-20260806
+    paths:
+      - '.github/workflows/russia-hk-support-data.yml'
+      - 'research_tools/fetch_hkma_only.py'
+      - 'research_tools/fetch_concordance_only.py'
+      - 'research_tools/fetch_prices_only.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hkma:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests pandas
+      - run: python research_tools/fetch_hkma_only.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hkma
+          path: acquired/hkma/
+          retention-days: 3
+  concordance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests pandas
+      - run: python research_tools/fetch_concordance_only.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: concordance
+          path: acquired/concordance/
+          retention-days: 3
+  prices:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests pandas openpyxl beautifulsoup4
+      - run: python research_tools/fetch_prices_only.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prices
+          path: acquired/prices/
+          retention-days: 3
